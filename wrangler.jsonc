@@ -1,0 +1,30 @@
+{
+  "name": "cf-saas-admin-starter",
+  "main": "./dist/index.js",
+  "assets": {
+    "directory": "./dist"
+  },
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true,
+  "vars": {
+    "EXAMPLE_VALUE": "example_value"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "icy-scene-b712-d1",
+      "database_id": "620f567e-24b0-4e6f-a57d-9a0bf7e9950b"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "cf-saas-admin-starter-customer-workflow",
+      "binding": "CUSTOMER_WORKFLOW",
+      "class_name": "CustomerWorkflow"
+    }
+  ]
+}
