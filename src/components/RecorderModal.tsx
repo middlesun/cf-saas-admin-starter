@@ -399,7 +399,7 @@ export const RecorderModal: React.FC<RecorderModalProps> = ({
 
     const finalizeAndSave = () => {
       const chunks = videoChunksRef.current;
-      const videoBlob = new Blob(chunks, { type: 'video/webm' });
+      let videoBlob = chunks.length > 0 ? new Blob(chunks, { type: 'video/webm' }) : new Blob([], { type: 'video/webm' });
       const computedDuration = startTimeRef.current > 0
         ? Math.max(1, Math.floor((Date.now() - startTimeRef.current) / 1000))
         : Math.max(1, elapsedSeconds);
@@ -429,7 +429,7 @@ export const RecorderModal: React.FC<RecorderModalProps> = ({
         createdAt: Date.now(),
         updatedAt: Date.now(),
         sourceVideoBlob: videoBlob,
-        sourceVideoBlobUrl: URL.createObjectURL(videoBlob),
+        sourceVideoBlobUrl: videoBlob.size > 0 ? URL.createObjectURL(videoBlob) : undefined,
         duration: computedDuration,
         videoSegments: [
           {
@@ -458,6 +458,7 @@ export const RecorderModal: React.FC<RecorderModalProps> = ({
       cleanupStream();
       setRecordingState('idle');
       setIsSelectingArea(false);
+      isStoppingRef.current = false;
       onFinishRecording(newProject);
     };
 
@@ -472,6 +473,13 @@ export const RecorderModal: React.FC<RecorderModalProps> = ({
     };
 
     try {
+      if (recorder.state === 'recording') {
+        try {
+          recorder.requestData();
+        } catch {
+          // ignore if requestData not supported in current state
+        }
+      }
       recorder.stop();
     } catch (e) {
       console.warn('Error stopping MediaRecorder:', e);

@@ -70,9 +70,14 @@ export default function App() {
   // Handle Finish Recording -> Save and open Editor
   const handleFinishRecording = async (newProject: Project) => {
     setIsRecorderOpen(false);
-    await saveProject(newProject);
-    await loadProjects();
+    setProjects((prev) => [newProject, ...prev.filter((p) => p.id !== newProject.id)]);
     setSelectedProjectId(newProject.id);
+    try {
+      await saveProject(newProject);
+      await loadProjects();
+    } catch (err) {
+      console.error('Failed to persist new recording:', err);
+    }
   };
 
   // Create Sample Demo Project Template
@@ -80,9 +85,10 @@ export default function App() {
     setIsGeneratingSample(true);
     try {
       const sample = await createSampleDemoProject(template);
+      setProjects((prev) => [sample, ...prev.filter((p) => p.id !== sample.id)]);
+      setSelectedProjectId(sample.id);
       await saveProject(sample);
       await loadProjects();
-      setSelectedProjectId(sample.id);
     } catch (e) {
       console.error('Failed to create sample demo project:', e);
     } finally {
@@ -126,9 +132,14 @@ export default function App() {
         },
       };
 
-      await saveProject(newProject);
-      await loadProjects();
+      setProjects((prev) => [newProject, ...prev.filter((p) => p.id !== newProject.id)]);
       setSelectedProjectId(newProject.id);
+      try {
+        await saveProject(newProject);
+        await loadProjects();
+      } catch (err) {
+        console.error('Failed to save imported video:', err);
+      }
     };
   };
 
