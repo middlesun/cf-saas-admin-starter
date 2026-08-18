@@ -1,8 +1,26 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Project, TextAnnotation, ClickAnimation, TransitionCard } from '../../types';
-import { renderClickAnimation, renderAnnotation, renderTransitionCardFrame } from '../../lib/videoExporter';
+import { renderClickAnimation, renderAnnotation, renderTransitionCardFrame, ExportOptions } from '../../lib/videoExporter';
 import { calculateZoomTransformAtTime } from '../../lib/zoomSystem';
-import { Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize, MousePointerClick, MessageSquarePlus, Sparkles, Tv2 } from 'lucide-react';
+import {
+  Play,
+  Pause,
+  RotateCcw,
+  RotateCw,
+  Volume2,
+  VolumeX,
+  Maximize,
+  MousePointerClick,
+  MessageSquarePlus,
+  Sparkles,
+  Tv2,
+  Download,
+  ChevronDown,
+  Film,
+  FileImage,
+  Settings2,
+  SkipBack,
+} from 'lucide-react';
 
 interface VideoPreviewProps {
   project: Project;
@@ -22,6 +40,8 @@ interface VideoPreviewProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   layoutViewMode?: 'standard' | 'widescreen';
   onChangeLayoutViewMode?: (mode: 'standard' | 'widescreen') => void;
+  onTriggerExport?: (options?: ExportOptions) => void;
+  onOpenExportModal?: (options?: ExportOptions) => void;
 }
 
 export const VideoPreview: React.FC<VideoPreviewProps> = ({
@@ -42,14 +62,39 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
   videoRef,
   layoutViewMode = 'standard',
   onChangeLayoutViewMode,
+  onTriggerExport,
+  onOpenExportModal,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const timelineTrackRef = useRef<HTMLDivElement>(null);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isDraggingAnnotation, setIsDraggingAnnotation] = useState<boolean>(false);
   const [addMode, setAddMode] = useState<'none' | 'click' | 'annotation'>('none');
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState<boolean>(false);
 
-  const duration = project.duration || 1;
+  // Timeline Scrubbing & Hover States
+  const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
+  const [hoverTime, setHoverTime] = useState<number | null>(null);
+  const [hoverPositionPercent, setHoverPositionPercent] = useState<number | null>(null);
+
+  const duration = Math.max(project.duration || 1, 0.1);
+  const progressPercent = Math.min(100, Math.max(0, (currentTime / duration) * 100));
+
+  // Close export menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setIsExportMenuOpen(false);
+      }
+    };
+    if (isExportMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [isExportMenuOpen]);
 
   // Calculate live Zoom Transformation at currentTime
   const zoomTransform = calculateZoomTransformAtTime(project.zoomEvents || [], currentTime);
@@ -154,7 +199,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
     return () => cancelAnimationFrame(animId);
   }, [currentTime, project, selectedAnnotationId, selectedClickId]);
 
-  // Handle canvas click / drag positioning
+  // Handle canvas click / drag positioning / Click-to-Play-Pause
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
@@ -194,8 +239,10 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
       return;
     }
 
+    // If clicking on empty canvas space, deselect and toggle Play/Pause
     onSelectAnnotation(null);
     onSelectClick(null);
+    onPlayPause();
   };
 
   const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -221,6 +268,53 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
     }
   };
 
+  // Timeline Seeking & Dragging Logic
+  const calculateTimelineTimeFromEvent = useCallback(
+    (clientX: number) => {
+      if (!timelineTrackRef.current) return 0;
+      const rect = timelineTrackRef.current.getBoundingClientRect();
+      const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      return pos * duration;
+    },
+    [duration]
+  );
+
+  const handleTimelineMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsScrubbing(true);
+    const newTime = calculateTimelineTimeFromEvent(e.clientX);
+    onSeek(newTime);
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const scrubTime = calculateTimelineTimeFromEvent(moveEvent.clientX);
+      onSeek(scrubTime);
+    };
+
+    const handleMouseUp = () => {
+      setIsScrubbing(false);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
+  const handleTimelineMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!timelineTrackRef.current) return;
+    const rect = timelineTrackRef.current.getBoundingClientRect();
+    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    setHoverPositionPercent(pos * 100);
+    setHoverTime(pos * duration);
+  };
+
+  const handleTimelineMouseLeave = () => {
+    if (!isScrubbing) {
+      setHoverTime(null);
+      setHoverPositionPercent(null);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden shadow-2xl">
       {/* Top Quick Tools Bar */}
@@ -229,6 +323,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           <span className="font-semibold text-slate-300">Quick Add on Canvas:</span>
 
           <button
+            type="button"
             onClick={() => setAddMode(addMode === 'click' ? 'none' : 'click')}
             className={`px-3 py-1 rounded-lg font-medium flex items-center gap-1.5 transition-all ${
               addMode === 'click'
@@ -241,6 +336,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={() => setAddMode(addMode === 'annotation' ? 'none' : 'annotation')}
             className={`px-3 py-1 rounded-lg font-medium flex items-center gap-1.5 transition-all ${
               addMode === 'annotation'
@@ -253,19 +349,106 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           </button>
         </div>
 
-        <div className="flex items-center gap-3 text-slate-400">
-          <span>Speed:</span>
-          {[1.0, 1.25, 1.5, 2.0].map((s) => (
+        {/* Top-Right: Speed Controls + Export Controls */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-slate-400">
+            <span>Speed:</span>
+            {[1.0, 1.25, 1.5, 2.0].map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => onChangePlaybackSpeed(s)}
+                className={`px-2 py-0.5 rounded text-xs font-mono font-semibold transition-all ${
+                  playbackSpeed === s ? 'bg-sky-500/20 text-sky-400 border border-sky-500/30' : 'hover:text-slate-200'
+                }`}
+              >
+                {s}x
+              </button>
+            ))}
+          </div>
+
+          <div className="h-4 w-px bg-slate-800" />
+
+          {/* Download / Export Controls */}
+          <div className="relative" ref={exportMenuRef}>
             <button
-              key={s}
-              onClick={() => onChangePlaybackSpeed(s)}
-              className={`px-2 py-0.5 rounded text-xs font-mono font-semibold transition-all ${
-                playbackSpeed === s ? 'bg-sky-500/20 text-sky-400 border border-sky-500/30' : 'hover:text-slate-200'
-              }`}
+              type="button"
+              onClick={() => setIsExportMenuOpen(!isExportMenuOpen)}
+              className="px-3 py-1 rounded-lg bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-sky-500/20 transition-all hover:scale-[1.02] active:scale-95"
+              title="Export / Download Video or GIF"
             >
-              {s}x
+              <Download className="w-3.5 h-3.5 stroke-[2.5]" />
+              <span>Export</span>
+              <ChevronDown className={`w-3 h-3 ml-0.5 transition-transform ${isExportMenuOpen ? 'rotate-180' : ''}`} />
             </button>
-          ))}
+
+            {isExportMenuOpen && (
+              <div className="absolute right-0 top-full mt-2 w-64 rounded-xl bg-slate-900 border border-slate-700/80 shadow-2xl p-2 z-50 backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150">
+                <div className="px-2.5 py-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  Export Format
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsExportMenuOpen(false);
+                    if (onTriggerExport) {
+                      onTriggerExport({ format: 'mp4', resolution: '1080p', fps: 30, quality: 'high' });
+                    } else if (onOpenExportModal) {
+                      onOpenExportModal({ format: 'mp4' });
+                    }
+                  }}
+                  className="w-full px-2.5 py-2 rounded-lg text-left text-xs text-slate-200 hover:bg-sky-500/15 hover:text-sky-300 flex items-center gap-2.5 transition-all group"
+                >
+                  <Film className="w-4 h-4 text-sky-400 group-hover:scale-110 transition-transform" />
+                  <div>
+                    <div className="font-semibold text-slate-100 group-hover:text-sky-300">Video (MP4 / WebM)</div>
+                    <div className="text-[10px] text-slate-400">1080p Full HD with Audio</div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsExportMenuOpen(false);
+                    if (onTriggerExport) {
+                      onTriggerExport({ format: 'gif', resolution: '720p', fps: 20, quality: 'high' });
+                    } else if (onOpenExportModal) {
+                      onOpenExportModal({ format: 'gif' });
+                    }
+                  }}
+                  className="w-full px-2.5 py-2 rounded-lg text-left text-xs text-slate-200 hover:bg-amber-500/15 hover:text-amber-300 flex items-center gap-2.5 transition-all group"
+                >
+                  <FileImage className="w-4 h-4 text-amber-400 group-hover:scale-110 transition-transform" />
+                  <div>
+                    <div className="font-semibold text-slate-100 group-hover:text-amber-300">Animated GIF</div>
+                    <div className="text-[10px] text-slate-400">Looping GIF for READMEs & docs</div>
+                  </div>
+                </button>
+
+                <div className="my-1 border-t border-slate-800" />
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsExportMenuOpen(false);
+                    if (onOpenExportModal) {
+                      onOpenExportModal();
+                    } else if (onTriggerExport) {
+                      onTriggerExport();
+                    }
+                  }}
+                  className="w-full px-2.5 py-1.5 rounded-lg text-left text-xs text-slate-300 hover:bg-slate-800 hover:text-white flex items-center justify-between transition-all"
+                >
+                  <span className="flex items-center gap-2">
+                    <Settings2 className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Custom Settings...</span>
+                  </span>
+                  <span className="text-[10px] text-slate-500">4K, 60fps</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -307,6 +490,25 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           />
         </div>
 
+        {/* Center Play/Pause Button Overlay */}
+        {!isPlaying && addMode === 'none' && !isDraggingAnnotation && (
+          <div
+            onClick={(e) => {
+              e.stopPropagation();
+              onPlayPause();
+            }}
+            className="absolute inset-0 flex items-center justify-center cursor-pointer bg-slate-950/25 backdrop-blur-[1px] transition-all group/playoverlay"
+          >
+            <button
+              type="button"
+              className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-sky-500/90 hover:bg-sky-400 text-white flex items-center justify-center shadow-2xl shadow-sky-500/40 backdrop-blur-md transform transition-all duration-200 hover:scale-110 active:scale-95 group-hover/playoverlay:scale-110"
+              title="Click to Play"
+            >
+              <Play className="w-8 h-8 sm:w-9 sm:h-9 fill-white ml-1 text-white" />
+            </button>
+          </div>
+        )}
+
         {/* Active Zoom Indicator Badge */}
         {zoomTransform.activeZoom && zoomTransform.scale > 1.01 && (
           <div className="absolute top-3 right-3 px-3 py-1.5 rounded-xl bg-slate-900/90 border border-amber-500/40 text-amber-300 text-xs font-bold flex items-center gap-2 shadow-2xl backdrop-blur-md pointer-events-none animate-in fade-in duration-200">
@@ -324,11 +526,79 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
         )}
       </div>
 
+      {/* Interactive Video Progress Bar / Timeline */}
+      <div className="px-4 pt-2.5 pb-1 bg-slate-900/95 border-t border-slate-800/80 select-none">
+        <div
+          ref={timelineTrackRef}
+          onMouseDown={handleTimelineMouseDown}
+          onMouseMove={handleTimelineMouseMove}
+          onMouseLeave={handleTimelineMouseLeave}
+          className="relative h-2.5 bg-slate-800/90 hover:bg-slate-800 rounded-full cursor-pointer group/timeline transition-all"
+        >
+          {/* Hover Time Tooltip & Indicator */}
+          {hoverPositionPercent !== null && hoverTime !== null && (
+            <>
+              <div
+                style={{ left: `${hoverPositionPercent}%` }}
+                className="absolute top-0 bottom-0 w-0.5 bg-white/40 pointer-events-none"
+              />
+              <div
+                style={{ left: `${hoverPositionPercent}%` }}
+                className="absolute -top-7 -translate-x-1/2 px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-[10px] font-mono text-slate-200 font-bold pointer-events-none shadow-xl whitespace-nowrap z-30"
+              >
+                {formatSeconds(hoverTime)}
+              </div>
+            </>
+          )}
+
+          {/* Played Progress Fill */}
+          <div
+            style={{ width: `${progressPercent}%` }}
+            className="h-full rounded-full bg-gradient-to-r from-sky-500 via-sky-400 to-blue-500 relative transition-all duration-75 shadow-sm shadow-sky-500/30"
+          >
+            {/* Scrubber Knob */}
+            <div
+              className={`absolute -right-1.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 bg-white rounded-full shadow-lg ring-2 ring-sky-500 transition-transform duration-150 ${
+                isScrubbing ? 'scale-125' : 'scale-0 group-hover/timeline:scale-100'
+              }`}
+            />
+          </div>
+        </div>
+
+        {/* Progress Bar Subtitle info */}
+        <div className="flex justify-between items-center text-[10px] font-mono text-slate-400 pt-1 px-0.5">
+          <span>{formatSeconds(currentTime)}</span>
+          <span className="text-slate-500">
+            {duration > 0 ? `${progressPercent.toFixed(0)}% played` : ''}
+          </span>
+          <span>{formatSeconds(duration)}</span>
+        </div>
+      </div>
+
       {/* Bottom Video Controls Bar */}
-      <div className="px-5 py-3 bg-slate-900 border-t border-slate-800 flex items-center justify-between">
-        {/* Left Play/Pause & Skip */}
-        <div className="flex items-center gap-3">
+      <div className="px-5 py-2.5 bg-slate-900 flex items-center justify-between">
+        {/* Left Play/Pause & Skip & Play from Beginning */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          {/* Play from Beginning Button */}
           <button
+            type="button"
+            onClick={() => {
+              onSeek(0);
+              if (!isPlaying) {
+                onPlayPause();
+              }
+            }}
+            className="px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 flex items-center gap-1.5 text-xs font-semibold transition-all active:scale-95 shadow-sm"
+            title="Reset to 00:00 and start playback"
+          >
+            <SkipBack className="w-3.5 h-3.5 text-sky-400" />
+            <span className="hidden sm:inline">Play from beginning</span>
+          </button>
+
+          <div className="h-4 w-px bg-slate-800 hidden sm:block" />
+
+          <button
+            type="button"
             onClick={() => onSeek(Math.max(0, currentTime - 5))}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all"
             title="Rewind 5s"
@@ -337,8 +607,10 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={onPlayPause}
-            className="w-9 h-9 rounded-full bg-sky-500 hover:bg-sky-400 text-white flex items-center justify-center shadow-lg shadow-sky-500/20 transition-all"
+            className="w-9 h-9 rounded-full bg-sky-500 hover:bg-sky-400 text-white flex items-center justify-center shadow-lg shadow-sky-500/20 transition-all active:scale-95"
+            title={isPlaying ? 'Pause (Click preview or space)' : 'Play (Click preview or space)'}
           >
             {isPlaying ? (
               <Pause className="w-4 h-4 fill-white" />
@@ -348,6 +620,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={() => onSeek(Math.min(duration, currentTime + 5))}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all"
             title="Forward 5s"
@@ -356,7 +629,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           </button>
 
           {/* Time Counter */}
-          <div className="font-mono text-xs text-slate-300 font-semibold px-2 py-1 rounded bg-slate-950 border border-slate-800 ml-2">
+          <div className="font-mono text-xs text-slate-300 font-semibold px-2 py-1 rounded bg-slate-950 border border-slate-800 ml-1">
             {formatSeconds(currentTime)} / {formatSeconds(duration)}
           </div>
         </div>
@@ -365,6 +638,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
         <div className="flex items-center gap-2">
           {onChangeLayoutViewMode && (
             <button
+              type="button"
               onClick={() => onChangeLayoutViewMode(layoutViewMode === 'widescreen' ? 'standard' : 'widescreen')}
               className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-semibold transition-all ${
                 layoutViewMode === 'widescreen'
@@ -379,6 +653,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           )}
 
           <button
+            type="button"
             onClick={() => setIsMuted(!isMuted)}
             className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all"
             title={isMuted ? 'Unmute' : 'Mute'}
@@ -387,6 +662,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={toggleFullscreen}
             className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all"
             title="Fullscreen Preview"

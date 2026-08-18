@@ -11,7 +11,7 @@ import { AudioPanel } from './AudioPanel';
 import { AiEditorPanel } from './AiEditorPanel';
 import { ExportModal } from './ExportModal';
 import { SlideTemplateModal } from './SlideTemplateModal';
-import { renderAndExportVideo, ExportProgress } from '../../lib/videoExporter';
+import { renderAndExportVideo, ExportProgress, ExportOptions } from '../../lib/videoExporter';
 import { saveProject } from '../../lib/db';
 import { generateAutoZooms, DEFAULT_AUTO_ZOOM_SETTINGS } from '../../lib/zoomSystem';
 import { Scissors, MousePointerClick, MessageSquare, Layers, Music, Save, Check, Undo2, Redo2, Sparkles, ZoomIn } from 'lucide-react';
@@ -40,6 +40,8 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
 
   // Export State
   const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
+  const [exportedFormat, setExportedFormat] = useState<'mp4' | 'gif' | 'webm'>('mp4');
   const [exportProgress, setExportProgress] = useState<ExportProgress>({ percentage: 0, status: '' });
   const [exportedVideoUrl, setExportedVideoUrl] = useState<string | null>(null);
   const [isSaved, setIsSaved] = useState<boolean>(false);
@@ -251,16 +253,24 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
   };
 
   // Export Video Handler
-  const handleExport = async () => {
+  const handleExport = async (options?: ExportOptions) => {
     if (!videoRef.current) return;
+    const format = options?.format || 'mp4';
+    setExportedFormat(format);
     setIsExporting(true);
+    setIsExportModalOpen(true);
     setExportedVideoUrl(null);
-    setExportProgress({ percentage: 0, status: 'Starting video export process...' });
+    setExportProgress({ percentage: 0, status: `Starting ${format.toUpperCase()} export process...` });
 
     try {
-      const blob = await renderAndExportVideo(project, videoRef.current, (prog) => {
-        setExportProgress(prog);
-      });
+      const blob = await renderAndExportVideo(
+        project,
+        videoRef.current,
+        (prog) => {
+          setExportProgress(prog);
+        },
+        options
+      );
       const url = URL.createObjectURL(blob);
       setExportedVideoUrl(url);
     } catch (err) {
@@ -273,7 +283,8 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
     if (!exportedVideoUrl) return;
     const a = document.createElement('a');
     a.href = exportedVideoUrl;
-    a.download = `${project.name.replace(/\s+/g, '_')}_Demo.webm`;
+    const ext = exportedFormat === 'gif' ? 'gif' : exportedFormat === 'mp4' ? 'mp4' : 'webm';
+    a.download = `${project.name.replace(/\s+/g, '_')}_Demo.${ext}`;
     a.click();
   };
 
@@ -346,6 +357,11 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
                 videoRef={videoRef}
                 layoutViewMode={layoutViewMode}
                 onChangeLayoutViewMode={setLayoutViewMode}
+                onTriggerExport={handleExport}
+                onOpenExportModal={(opts) => {
+                  if (opts?.format) setExportedFormat(opts.format);
+                  setIsExportModalOpen(true);
+                }}
               />
             </div>
 
@@ -624,6 +640,11 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
                 videoRef={videoRef}
                 layoutViewMode={layoutViewMode}
                 onChangeLayoutViewMode={setLayoutViewMode}
+                onTriggerExport={handleExport}
+                onOpenExportModal={(opts) => {
+                  if (opts?.format) setExportedFormat(opts.format);
+                  setIsExportModalOpen(true);
+                }}
               />
             </div>
 
@@ -823,11 +844,17 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
 
       {/* Export Modal Component */}
       <ExportModal
-        isOpen={isExporting}
-        onClose={() => setIsExporting(false)}
+        isOpen={isExportModalOpen || isExporting}
+        onClose={() => {
+          setIsExportModalOpen(false);
+          setIsExporting(false);
+        }}
         progress={exportProgress}
         exportedVideoUrl={exportedVideoUrl}
         onDownload={handleDownload}
+        onStartExport={handleExport}
+        isExporting={isExporting}
+        currentFormat={exportedFormat}
       />
     </div>
   );
