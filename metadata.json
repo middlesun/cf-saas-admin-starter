@@ -1,0 +1,6 @@
+{
+  "name": "SAAS Demo creator",
+  "description": "Create polished web application demo videos with click animations, annotations, transitions, and background audio.",
+  "requestFramePermissions": ["display-capture", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"] 
+}

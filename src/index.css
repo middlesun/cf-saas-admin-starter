@@ -1,0 +1,168 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   Custom Transparent Elegant Scrollbar Styling (Global & Custom)
+   ========================================================================== */
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 9999px;
+  transition: background 0.2s ease;
+}
+
+html::-webkit-scrollbar-thumb:hover,
+body::-webkit-scrollbar-thumb:hover,
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(56, 189, 248, 0.5);
+}
+
+html::-webkit-scrollbar-corner,
+body::-webkit-scrollbar-corner,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Standard Firefox & CSS Scrollbar Spec */
+html,
+body,
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+}
+
+/* Explicit class for custom scrollbars */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(56, 189, 248, 0.5);
+}
+
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+}
+
+@layer base {
+  /* ==========================================================================
+     Custom Web-2 Dropdown Fields (Select & Options) Styling
+     ========================================================================== */
+  select {
+    background-color: #090d16;
+    color: #f1f5f9;
+    border: 1px solid rgba(51, 65, 85, 0.8);
+    border-radius: 0.75rem;
+    padding: 0.5rem 2.25rem 0.5rem 0.75rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%3C38bdf8' stroke-width='2.5'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7' /%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    background-size: 0.875rem 0.875rem;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-weight: 500;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
+  }
+
+  select:hover {
+    border-color: rgba(56, 189, 248, 0.6);
+    background-color: #0f172a;
+    box-shadow: 0 2px 8px -2px rgba(56, 189, 248, 0.25);
+  }
+
+  select:focus {
+    outline: none;
+    border-color: #38bdf8;
+    box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2);
+    background-color: #0f172a;
+  }
+
+  select option {
+    background-color: #090d16;
+    color: #f1f5f9;
+    padding: 0.6rem 0.8rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+  }
+
+  /* ==========================================================================
+     Custom Tooltip Styling Upgrade
+     ========================================================================== */
+  [data-tooltip] {
+    position: relative;
+  }
+
+  [data-tooltip]::before {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 125%;
+    left: 50%;
+    transform: translateX(-50%) translateY(4px);
+    background: rgba(15, 23, 42, 0.95);
+    backdrop-filter: blur(8px);
+    color: #f8fafc;
+    font-size: 0.725rem;
+    font-weight: 600;
+    padding: 0.35rem 0.65rem;
+    border-radius: 0.5rem;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 0 12px rgba(56, 189, 248, 0.2);
+    z-index: 9999;
+  }
+
+  [data-tooltip]::after {
+    content: '';
+    position: absolute;
+    bottom: 110%;
+    left: 50%;
+    transform: translateX(-50%) translateY(4px);
+    border-width: 5px 5px 0 5px;
+    border-style: solid;
+    border-color: rgba(15, 23, 42, 0.95) transparent transparent transparent;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    z-index: 9999;
+  }
+
+  [data-tooltip]:hover::before,
+  [data-tooltip]:hover::after {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(0);
+  }
+}

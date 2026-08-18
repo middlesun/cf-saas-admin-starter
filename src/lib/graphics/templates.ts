@@ -1,0 +1,481 @@
+import { GraphicTemplate, GraphicTemplateType, StylePreset } from '../../types';
+
+export const BUILTIN_GRAPHIC_TEMPLATES: GraphicTemplate[] = [
+  // 1. INTRO / OUTRO TEMPLATES (16:9 - 1920x1080)
+  {
+    id: 'gtpl_intro_saas_launch',
+    name: 'SaaS Launch Intro',
+    type: 'intro',
+    aspectRatio: '16:9',
+    width: 1920,
+    height: 1080,
+    isBuiltIn: true,
+    background: {
+      type: 'image',
+      value: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1920&auto=format&fit=crop',
+      overlayColor: '#000000',
+      overlayOpacity: 0.45,
+      zoom: 100,
+      brightness: 100,
+    },
+    elements: [
+      {
+        id: 'el_badge',
+        type: 'text',
+        label: 'Badge Label',
+        content: '✨ PRODUCT LAUNCH DEMO',
+        x: 35,
+        y: 18,
+        width: 30,
+        height: 8,
+        fontSize: 22,
+        fontWeight: '800',
+        color: '#38bdf8',
+        backgroundColor: 'rgba(15, 23, 42, 0.85)',
+        borderRadius: 20,
+        textAlign: 'center',
+        padding: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(56, 189, 248, 0.4)',
+      },
+      {
+        id: 'el_title',
+        type: 'text',
+        label: 'Main Title',
+        content: 'Introducing Acme AI',
+        x: 10,
+        y: 32,
+        width: 80,
+        height: 18,
+        fontSize: 64,
+        fontWeight: '900',
+        color: '#ffffff',
+        textAlign: 'center',
+        textShadow: '0 10px 25px rgba(0,0,0,0.8)',
+      },
+      {
+        id: 'el_subtitle',
+        type: 'text',
+        label: 'Subtitle Tagline',
+        content: 'Build AI-powered workflows in minutes. Automate repetitive tasks effortlessly.',
+        x: 15,
+        y: 56,
+        width: 70,
+        height: 14,
+        fontSize: 28,
+        fontWeight: '500',
+        color: '#e2e8f0',
+        textAlign: 'center',
+        textShadow: '0 4px 12px rgba(0,0,0,0.8)',
+      },
+      {
+        id: 'el_cta_badge',
+        type: 'text',
+        label: 'CTA Website',
+        content: '🚀 Try Acme AI Today • acme.ai',
+        x: 30,
+        y: 78,
+        width: 40,
+        height: 10,
+        fontSize: 26,
+        fontWeight: '700',
+        color: '#ffffff',
+        backgroundColor: '#0284c7',
+        borderRadius: 14,
+        textAlign: 'center',
+        padding: 12,
+        boxShadow: '0 10px 20px rgba(2, 132, 199, 0.4)',
+      },
+    ],
+  },
+  {
+    id: 'gtpl_outro_saas_callout',
+    name: 'Clean SaaS Outro CTA',
+    type: 'outro',
+    aspectRatio: '16:9',
+    width: 1920,
+    height: 1080,
+    isBuiltIn: true,
+    background: {
+      type: 'image',
+      value: 'https://images.unsplash.com/photo-1550684848-fac1c5b4e853?q=80&w=1920&auto=format&fit=crop',
+      overlayColor: '#020617',
+      overlayOpacity: 0.55,
+      zoom: 100,
+    },
+    elements: [
+      {
+        id: 'el_outro_title',
+        type: 'text',
+        label: 'Outro Title',
+        content: 'Ready to Transform Your Workflow?',
+        x: 10,
+        y: 28,
+        width: 80,
+        height: 18,
+        fontSize: 58,
+        fontWeight: '800',
+        color: '#ffffff',
+        textAlign: 'center',
+        textShadow: '0 10px 25px rgba(0,0,0,0.8)',
+      },
+      {
+        id: 'el_outro_sub',
+        type: 'text',
+        label: 'Sub headline',
+        content: 'Start your free 14-day trial. No credit card required.',
+        x: 15,
+        y: 48,
+        width: 70,
+        height: 12,
+        fontSize: 28,
+        fontWeight: '500',
+        color: '#cbd5e1',
+        textAlign: 'center',
+        textShadow: '0 4px 12px rgba(0,0,0,0.8)',
+      },
+      {
+        id: 'el_outro_btn',
+        type: 'text',
+        label: 'CTA Button',
+        content: 'Visit acme.ai →',
+        x: 35,
+        y: 68,
+        width: 30,
+        height: 12,
+        fontSize: 32,
+        fontWeight: '800',
+        color: '#ffffff',
+        backgroundColor: '#38bdf8',
+        borderRadius: 16,
+        textAlign: 'center',
+        padding: 14,
+        boxShadow: '0 12px 30px rgba(56, 189, 248, 0.4)',
+      },
+    ],
+  },
+
+  // 2. YOUTUBE THUMBNAIL TEMPLATES (16:9 - 1280x720)
+  {
+    id: 'gtpl_thumbnail_high_ctr',
+    name: 'High CTR YouTube Thumbnail',
+    type: 'thumbnail',
+    aspectRatio: '16:9',
+    width: 1280,
+    height: 720,
+    isBuiltIn: true,
+    background: {
+      type: 'image',
+      value: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?q=80&w=1920&auto=format&fit=crop',
+      overlayColor: '#0f172a',
+      overlayOpacity: 0.5,
+    },
+    elements: [
+      {
+        id: 'el_thumb_tag',
+        type: 'text',
+        label: 'Badge Highlight',
+        content: '⚡ FULL TUTORIAL',
+        x: 8,
+        y: 12,
+        width: 32,
+        height: 10,
+        fontSize: 22,
+        fontWeight: '900',
+        color: '#020617',
+        backgroundColor: '#38bdf8',
+        borderRadius: 8,
+        textAlign: 'center',
+        padding: 8,
+      },
+      {
+        id: 'el_thumb_title',
+        type: 'text',
+        label: 'Thumbnail Headline',
+        content: 'BUILD AN AI APP IN 3 MINS',
+        x: 8,
+        y: 28,
+        width: 58,
+        height: 38,
+        fontSize: 52,
+        fontWeight: '900',
+        color: '#ffffff',
+        textAlign: 'left',
+        textShadow: '0 10px 25px rgba(0,0,0,0.9)',
+      },
+      {
+        id: 'el_thumb_pill',
+        type: 'text',
+        label: 'Bottom Pill',
+        content: 'NO CODE REQUIRED',
+        x: 8,
+        y: 72,
+        width: 38,
+        height: 12,
+        fontSize: 24,
+        fontWeight: '800',
+        color: '#f43f5e',
+        backgroundColor: 'rgba(244, 63, 94, 0.25)',
+        borderRadius: 12,
+        textAlign: 'center',
+        padding: 10,
+        borderWidth: 2,
+        borderColor: '#f43f5e',
+      },
+      {
+        id: 'el_thumb_card',
+        type: 'shape',
+        label: 'UI Mockup Card',
+        x: 68,
+        y: 20,
+        width: 26,
+        height: 62,
+        backgroundColor: 'rgba(30, 41, 59, 0.9)',
+        borderRadius: 16,
+        borderWidth: 2,
+        borderColor: 'rgba(56, 189, 248, 0.4)',
+      },
+    ],
+  },
+
+  // 3. INSTAGRAM / SQUARE TEMPLATES (1:1 - 1080x1080)
+  {
+    id: 'gtpl_square_classic_demo',
+    name: 'Classic Square Demo Template',
+    type: 'social_square',
+    aspectRatio: '1:1',
+    width: 1080,
+    height: 1080,
+    isBuiltIn: true,
+    background: {
+      type: 'image',
+      value: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?q=80&w=1920&auto=format&fit=crop',
+      overlayColor: '#0f172a',
+      overlayOpacity: 0.5,
+    },
+    elements: [
+      {
+        id: 'el_sq_header_title',
+        type: 'text',
+        label: 'Header Headline',
+        content: 'Build AI Workflows Faster 🚀',
+        x: 5,
+        y: 5,
+        width: 90,
+        height: 12,
+        fontSize: 38,
+        fontWeight: '800',
+        color: '#ffffff',
+        textAlign: 'center',
+        textShadow: '0 4px 15px rgba(0,0,0,0.8)',
+      },
+      {
+        id: 'el_sq_header_sub',
+        type: 'text',
+        label: 'Header Subtitle',
+        content: 'See how Acme AI automates your daily task stack',
+        x: 10,
+        y: 18,
+        width: 80,
+        height: 8,
+        fontSize: 22,
+        fontWeight: '500',
+        color: '#cbd5e1',
+        textAlign: 'center',
+        textShadow: '0 2px 8px rgba(0,0,0,0.8)',
+      },
+      {
+        id: 'el_sq_video_placeholder',
+        type: 'video_placeholder',
+        label: 'Source Video Region',
+        x: 5,
+        y: 28,
+        width: 90,
+        height: 56,
+        borderRadius: 16,
+        borderWidth: 2,
+        borderColor: '#38bdf8',
+        boxShadow: '0 15px 35px rgba(0,0,0,0.6)',
+      },
+      {
+        id: 'el_sq_footer_cta',
+        type: 'text',
+        label: 'Footer CTA',
+        content: 'Try FREE at acme.ai →',
+        x: 20,
+        y: 88,
+        width: 60,
+        height: 8,
+        fontSize: 26,
+        fontWeight: '800',
+        color: '#ffffff',
+        backgroundColor: '#0284c7',
+        borderRadius: 12,
+        textAlign: 'center',
+        padding: 12,
+        boxShadow: '0 8px 20px rgba(2, 132, 199, 0.4)',
+      },
+    ],
+  },
+
+  // 4. REELS & SHORTS TEMPLATES (9:16 - 1080x1920)
+  {
+    id: 'gtpl_vertical_reels_pro',
+    name: 'SaaS Reels & Shorts Template',
+    type: 'social_vertical',
+    aspectRatio: '9:16',
+    width: 1080,
+    height: 1920,
+    isBuiltIn: true,
+    background: {
+      type: 'image',
+      value: 'https://images.unsplash.com/photo-1634017839464-5c339ebe3cb4?q=80&w=1920&auto=format&fit=crop',
+      overlayColor: '#020617',
+      overlayOpacity: 0.5,
+    },
+    elements: [
+      {
+        id: 'el_vert_badge',
+        type: 'text',
+        label: 'Top Badge',
+        content: '✨ SAAS PRODUCT DEMO',
+        x: 20,
+        y: 6,
+        width: 60,
+        height: 4,
+        fontSize: 24,
+        fontWeight: '800',
+        color: '#38bdf8',
+        backgroundColor: 'rgba(15, 23, 42, 0.8)',
+        borderRadius: 20,
+        textAlign: 'center',
+        padding: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(56, 189, 248, 0.3)',
+      },
+      {
+        id: 'el_vert_headline',
+        type: 'text',
+        label: 'Main Headline',
+        content: 'How to Build an AI App in Minutes ⚡',
+        x: 6,
+        y: 12,
+        width: 88,
+        height: 12,
+        fontSize: 48,
+        fontWeight: '900',
+        color: '#ffffff',
+        textAlign: 'center',
+        boxShadow: '0 10px 20px rgba(0,0,0,0.5)',
+      },
+      // Video Placeholder Region in Vertical Frame
+      {
+        id: 'el_vert_video_placeholder',
+        type: 'video_placeholder',
+        label: 'Main Source Video Region',
+        x: 4,
+        y: 27,
+        width: 92,
+        height: 52,
+        borderRadius: 20,
+        borderWidth: 3,
+        borderColor: '#38bdf8',
+        boxShadow: '0 20px 40px rgba(0,0,0,0.8)',
+      },
+      {
+        id: 'el_vert_sub',
+        type: 'text',
+        label: 'Bottom Tagline',
+        content: 'No coding required. Instant Deployment.',
+        x: 8,
+        y: 81,
+        width: 84,
+        height: 5,
+        fontSize: 28,
+        fontWeight: '600',
+        color: '#e2e8f0',
+        textAlign: 'center',
+      },
+      {
+        id: 'el_vert_cta',
+        type: 'text',
+        label: 'Footer Button',
+        content: 'Start Free Trial → acme.ai',
+        x: 15,
+        y: 88,
+        width: 70,
+        height: 6,
+        fontSize: 32,
+        fontWeight: '900',
+        color: '#0f172a',
+        backgroundColor: '#ffffff',
+        borderRadius: 16,
+        textAlign: 'center',
+        padding: 14,
+        boxShadow: '0 12px 25px rgba(255,255,255,0.3)',
+      },
+    ],
+  },
+];
+
+const GRAPHIC_TEMPLATES_STORAGE_KEY = 'saas_demo_creator_graphic_templates';
+
+export function getCustomGraphicTemplates(): GraphicTemplate[] {
+  try {
+    const raw = localStorage.getItem(GRAPHIC_TEMPLATES_STORAGE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn('Failed to parse custom graphic templates:', e);
+    return [];
+  }
+}
+
+export function saveCustomGraphicTemplate(template: GraphicTemplate): void {
+  const existing = getCustomGraphicTemplates();
+  const updated = [
+    { ...template, isBuiltIn: false, createdAt: Date.now() },
+    ...existing.filter((t) => t.id !== template.id),
+  ];
+  localStorage.setItem(GRAPHIC_TEMPLATES_STORAGE_KEY, JSON.stringify(updated));
+}
+
+export function deleteCustomGraphicTemplate(id: string): void {
+  const existing = getCustomGraphicTemplates();
+  const updated = existing.filter((t) => t.id !== id);
+  localStorage.setItem(GRAPHIC_TEMPLATES_STORAGE_KEY, JSON.stringify(updated));
+}
+
+export function getAllGraphicTemplates(): GraphicTemplate[] {
+  return [...BUILTIN_GRAPHIC_TEMPLATES, ...getCustomGraphicTemplates()];
+}
+
+export function applyBrandPresetToTemplate(template: GraphicTemplate, preset: StylePreset): GraphicTemplate {
+  const updatedElements = template.elements.map((el) => {
+    if (el.type === 'text') {
+      return {
+        ...el,
+        fontFamily: preset.calloutFontFamily || el.fontFamily,
+        color: el.backgroundColor ? preset.calloutTextColor : preset.transitionTextColor,
+        backgroundColor: el.backgroundColor ? preset.calloutBgColor : el.backgroundColor,
+      };
+    }
+    if (el.type === 'video_placeholder') {
+      return {
+        ...el,
+        borderColor: preset.clickColor || el.borderColor,
+      };
+    }
+    return el;
+  });
+
+  return {
+    ...template,
+    brandPresetId: preset.id,
+    background: {
+      type: 'color',
+      value: preset.transitionBgColor || template.background.value,
+    },
+    elements: updatedElements,
+  };
+}
