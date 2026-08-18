@@ -395,6 +395,9 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
               onSplitSegmentAtPlayhead={handleSplitSegmentAtPlayhead}
               onDeleteSelectedItem={handleDeleteSelectedItem}
               onOpenSlideModal={() => setIsSlideModalOpen(true)}
+              onUpdateSegments={handleUpdateSegments}
+              activeTab={activeTab}
+              onSelectTab={setActiveTab}
             />
 
             {/* Manual Tool Tabs & Property Panels */}
@@ -498,6 +501,8 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
                       handleUpdateSegments(updated);
                     }}
                     onSeek={handleSeek}
+                    onPlayPause={handlePlayPause}
+                    isPlaying={isPlaying}
                   />
                 )}
 
@@ -678,6 +683,9 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
               onSplitSegmentAtPlayhead={handleSplitSegmentAtPlayhead}
               onDeleteSelectedItem={handleDeleteSelectedItem}
               onOpenSlideModal={() => setIsSlideModalOpen(true)}
+              onUpdateSegments={handleUpdateSegments}
+              activeTab={activeTab}
+              onSelectTab={setActiveTab}
             />
 
             {/* Manual Tool Tabs & Property Panels */}
@@ -781,6 +789,8 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
                       handleUpdateSegments(updated);
                     }}
                     onSeek={handleSeek}
+                    onPlayPause={handlePlayPause}
+                    isPlaying={isPlaying}
                   />
                 )}
 

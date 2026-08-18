@@ -1,6 +1,6 @@
-import React, { useRef, useState } from 'react';
-import { Project } from '../../types';
-import { Play, Pause, Scissors, Trash2, ZoomIn, ZoomOut, MousePointerClick, MessageSquare, Layers, Music, Video, Sparkles, Plus, Search } from 'lucide-react';
+import React, { useRef, useState, useEffect } from 'react';
+import { Project, VideoSegment } from '../../types';
+import { Play, Pause, Scissors, Trash2, ZoomIn, ZoomOut, MousePointerClick, MessageSquare, Layers, Music, Video, Sparkles, Plus, Search, GripVertical } from 'lucide-react';
 
 interface TimelineProps {
   project: Project;
@@ -19,6 +19,9 @@ interface TimelineProps {
   onSplitSegmentAtPlayhead: () => void;
   onDeleteSelectedItem: () => void;
   onOpenSlideModal?: () => void;
+  onUpdateSegments?: (segments: VideoSegment[]) => void;
+  activeTab?: string;
+  onSelectTab?: (tab: 'zoom' | 'trim' | 'click' | 'text' | 'transition' | 'audio') => void;
 }
 
 export const Timeline: React.FC<TimelineProps> = ({
@@ -38,9 +41,13 @@ export const Timeline: React.FC<TimelineProps> = ({
   onSplitSegmentAtPlayhead,
   onDeleteSelectedItem,
   onOpenSlideModal,
+  onUpdateSegments,
+  activeTab,
+  onSelectTab,
 }) => {
   const timelineRef = useRef<HTMLDivElement>(null);
   const [zoomLevel, setZoomLevel] = useState<number>(1); // 1x to 3x
+  const [draggingTrim, setDraggingTrim] = useState<{ segmentIndex: number; edge: 'start' | 'end' } | null>(null);
 
   const totalDuration = Math.max(1, project.duration);
 
@@ -49,12 +56,66 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   // Handle click on timeline track to seek playhead
   const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (draggingTrim) return;
     if (!timelineRef.current) return;
     const rect = timelineRef.current.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const percent = Math.max(0, Math.min(1, clickX / rect.width));
     onSeek(percent * totalDuration);
   };
+
+  // Drag Trim Handles interaction
+  const handleTrimHandleMouseDown = (e: React.MouseEvent, segmentIndex: number, edge: 'start' | 'end') => {
+    e.stopPropagation();
+    e.preventDefault();
+    setDraggingTrim({ segmentIndex, edge });
+    if (onSelectTab && activeTab !== 'trim') {
+      onSelectTab('trim');
+    }
+  };
+
+  useEffect(() => {
+    if (!draggingTrim) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!timelineRef.current || !onUpdateSegments) return;
+      const rect = timelineRef.current.getBoundingClientRect();
+      const clientX = Math.max(rect.left, Math.min(rect.right, e.clientX));
+      const percent = (clientX - rect.left) / rect.width;
+      const targetTime = Math.max(0, Math.min(totalDuration, percent * totalDuration));
+
+      const segment = project.videoSegments[draggingTrim.segmentIndex];
+      if (!segment) return;
+
+      if (draggingTrim.edge === 'start') {
+        const clampedStart = Math.max(0, Math.min(segment.endTime - 0.5, parseFloat(targetTime.toFixed(1))));
+        const updated = project.videoSegments.map((s, i) =>
+          i === draggingTrim.segmentIndex ? { ...s, startTime: clampedStart } : s
+        );
+        onUpdateSegments(updated);
+        onSeek(clampedStart);
+      } else {
+        const clampedEnd = Math.min(totalDuration, Math.max(segment.startTime + 0.5, parseFloat(targetTime.toFixed(1))));
+        const updated = project.videoSegments.map((s, i) =>
+          i === draggingTrim.segmentIndex ? { ...s, endTime: clampedEnd } : s
+        );
+        onUpdateSegments(updated);
+        onSeek(clampedEnd);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setDraggingTrim(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [draggingTrim, project.videoSegments, totalDuration, onUpdateSegments, onSeek]);
 
   return (
     <div className="bg-[#0d1322] border border-slate-800/80 rounded-2xl p-3.5 space-y-3 flex flex-col shadow-2xl select-none">
@@ -139,43 +200,86 @@ export const Timeline: React.FC<TimelineProps> = ({
       <div className="flex w-full gap-2">
         {/* Track Sidebar Labels Column */}
         <div className="w-28 shrink-0 space-y-2 pt-8 text-[11px] font-bold text-slate-400 select-none">
-          <div className="h-10 px-2.5 rounded-lg bg-[#111728] border border-slate-800/80 flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-slate-200">
+          <div
+            onClick={() => onSelectTab && onSelectTab('trim')}
+            className={`h-10 px-2.5 rounded-lg border flex items-center justify-between cursor-pointer transition-all ${
+              activeTab === 'trim'
+                ? 'bg-sky-500/20 border-sky-500/60 text-sky-300'
+                : 'bg-[#111728] border-slate-800/80 text-slate-200 hover:border-slate-700'
+            }`}
+            title="Video Segments & Trim Track"
+          >
+            <span className="flex items-center gap-1.5">
               <Video className="w-3.5 h-3.5 text-sky-400" />
               <span>Segments</span>
             </span>
           </div>
 
-          <div className="h-8 px-2.5 rounded-lg bg-[#111728] border border-slate-800/80 flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-amber-300">
+          <div
+            onClick={() => onSelectTab && onSelectTab('zoom')}
+            className={`h-8 px-2.5 rounded-lg border flex items-center justify-between cursor-pointer transition-all ${
+              activeTab === 'zoom'
+                ? 'bg-amber-500/20 border-amber-500/60 text-amber-300'
+                : 'bg-[#111728] border-slate-800/80 text-amber-300 hover:border-slate-700'
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
               <Sparkles className="w-3.5 h-3.5 text-amber-400" />
               <span>Zoom</span>
             </span>
           </div>
 
-          <div className="h-8 px-2.5 rounded-lg bg-[#111728] border border-slate-800/80 flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-sky-300">
+          <div
+            onClick={() => onSelectTab && onSelectTab('click')}
+            className={`h-8 px-2.5 rounded-lg border flex items-center justify-between cursor-pointer transition-all ${
+              activeTab === 'click'
+                ? 'bg-sky-500/20 border-sky-500/60 text-sky-300'
+                : 'bg-[#111728] border-slate-800/80 text-sky-300 hover:border-slate-700'
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
               <MousePointerClick className="w-3.5 h-3.5 text-sky-400" />
               <span>Clicks</span>
             </span>
           </div>
 
-          <div className="h-8 px-2.5 rounded-lg bg-[#111728] border border-slate-800/80 flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-blue-300">
+          <div
+            onClick={() => onSelectTab && onSelectTab('text')}
+            className={`h-8 px-2.5 rounded-lg border flex items-center justify-between cursor-pointer transition-all ${
+              activeTab === 'text'
+                ? 'bg-blue-500/20 border-blue-500/60 text-blue-300'
+                : 'bg-[#111728] border-slate-800/80 text-blue-300 hover:border-slate-700'
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
               <MessageSquare className="w-3.5 h-3.5 text-blue-400" />
               <span>Callouts</span>
             </span>
           </div>
 
-          <div className="h-8 px-2.5 rounded-lg bg-[#111728] border border-slate-800/80 flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-indigo-300">
+          <div
+            onClick={() => onSelectTab && onSelectTab('transition')}
+            className={`h-8 px-2.5 rounded-lg border flex items-center justify-between cursor-pointer transition-all ${
+              activeTab === 'transition'
+                ? 'bg-indigo-500/20 border-indigo-500/60 text-indigo-300'
+                : 'bg-[#111728] border-slate-800/80 text-indigo-300 hover:border-slate-700'
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
               <Layers className="w-3.5 h-3.5 text-indigo-400" />
               <span>Transitions</span>
             </span>
           </div>
 
-          <div className="h-9 px-2.5 rounded-lg bg-[#111728] border border-slate-800/80 flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-emerald-300">
+          <div
+            onClick={() => onSelectTab && onSelectTab('audio')}
+            className={`h-9 px-2.5 rounded-lg border flex items-center justify-between cursor-pointer transition-all ${
+              activeTab === 'audio'
+                ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300'
+                : 'bg-[#111728] border-slate-800/80 text-emerald-300 hover:border-slate-700'
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
               <Music className="w-3.5 h-3.5 text-emerald-400" />
               <span>Audio</span>
             </span>
@@ -202,26 +306,87 @@ export const Timeline: React.FC<TimelineProps> = ({
               })}
             </div>
 
-            {/* Track 1: Video Segments Track */}
-            <div className="h-10 relative bg-[#090d18]/80 rounded-xl border border-slate-800/80 p-1 flex items-center">
+            {/* Track 1: Video Segments & Interactive Trimming Track */}
+            <div className="h-10 relative bg-[#090d18]/80 rounded-xl border border-slate-800/80 p-1 flex items-center overflow-visible">
               {project.videoSegments.map((seg, idx) => {
                 const segStartPct = getPercent(seg.startTime);
                 const segEndPct = getPercent(seg.endTime);
                 const widthPct = Math.max(2, segEndPct - segStartPct);
+                const isSingleSegment = project.videoSegments.length === 1;
 
                 return (
                   <React.Fragment key={seg.id}>
+                    {/* Visual Trimmed-Out Left Region */}
+                    {isSingleSegment && seg.startTime > 0.05 && (
+                      <div
+                        style={{ left: '0%', width: `${segStartPct}%` }}
+                        className="absolute h-8 rounded-l-lg bg-rose-950/25 border-y border-l border-rose-500/30 flex items-center justify-center px-1 text-[10px] text-rose-400 font-mono overflow-hidden pointer-events-none"
+                        title={`Trimmed start: 0.0s - ${seg.startTime.toFixed(1)}s`}
+                      >
+                        {segStartPct > 8 && <span>✂ -{seg.startTime.toFixed(1)}s</span>}
+                      </div>
+                    )}
+
+                    {/* Visual Trimmed-Out Right Region */}
+                    {isSingleSegment && seg.endTime < totalDuration - 0.05 && (
+                      <div
+                        style={{ left: `${segEndPct}%`, width: `${100 - segEndPct}%` }}
+                        className="absolute h-8 rounded-r-lg bg-rose-950/25 border-y border-r border-rose-500/30 flex items-center justify-center px-1 text-[10px] text-rose-400 font-mono overflow-hidden pointer-events-none"
+                        title={`Trimmed end: ${seg.endTime.toFixed(1)}s - ${totalDuration.toFixed(1)}s`}
+                      >
+                        {(100 - segEndPct) > 8 && <span>✂ -{(totalDuration - seg.endTime).toFixed(1)}s</span>}
+                      </div>
+                    )}
+
+                    {/* Active Kept Video Segment */}
                     <div
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onSelectTab) onSelectTab('trim');
+                      }}
                       style={{ left: `${segStartPct}%`, width: `${widthPct}%` }}
-                      className="absolute h-8 rounded-lg bg-gradient-to-r from-sky-600/30 to-indigo-600/30 border border-sky-500/50 flex items-center justify-between px-2.5 text-xs font-semibold text-slate-100 truncate shadow-sm"
+                      className="absolute h-8 rounded-lg bg-gradient-to-r from-sky-600/40 via-sky-500/30 to-indigo-600/40 border border-sky-400/80 flex items-center justify-between px-3 text-xs font-semibold text-slate-100 shadow-md shadow-sky-500/10 cursor-pointer hover:brightness-110 transition-all"
                     >
-                      <span className="truncate text-[11px]">
-                        {idx === 0 ? 'Intro Slide' : 'Screen Recording'}
+                      <span className="truncate text-[11px] flex items-center gap-1.5">
+                        <Video className="w-3 h-3 text-sky-400" />
+                        <span>{idx === 0 && project.videoSegments.length > 1 ? 'Segment 1' : 'Screen Recording'}</span>
                       </span>
-                      <span className="text-[10px] text-sky-300/80 font-mono">
-                        {(seg.endTime - seg.startTime).toFixed(1)}s
+                      <span className="text-[10px] text-sky-300 font-mono bg-sky-950/80 px-1.5 py-0.5 rounded border border-sky-500/30">
+                        {(seg.endTime - seg.startTime).toFixed(1)}s kept
                       </span>
                     </div>
+
+                    {/* Draggable Start Trim Handle (Left Edge) */}
+                    {onUpdateSegments && (
+                      <div
+                        onMouseDown={(e) => handleTrimHandleMouseDown(e, idx, 'start')}
+                        style={{ left: `${segStartPct}%` }}
+                        className="absolute z-30 -translate-x-full h-8 w-3 bg-sky-500 hover:bg-sky-400 active:bg-sky-300 rounded-l-md border-y border-l border-white/60 shadow-lg cursor-ew-resize flex items-center justify-center text-white transition-transform hover:scale-105 active:scale-110 group/starthandle"
+                        title={`Drag to trim start (Current: ${seg.startTime.toFixed(1)}s)`}
+                      >
+                        <div className="w-0.5 h-3 bg-white/80 rounded-full" />
+                        {/* Tooltip on hover/drag */}
+                        <div className="absolute -top-7 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded bg-slate-900 border border-sky-500 text-[9px] font-mono text-sky-300 font-bold whitespace-nowrap shadow-xl opacity-0 group-hover/starthandle:opacity-100 pointer-events-none transition-opacity">
+                          Start: {seg.startTime.toFixed(1)}s
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Draggable End Trim Handle (Right Edge) */}
+                    {onUpdateSegments && (
+                      <div
+                        onMouseDown={(e) => handleTrimHandleMouseDown(e, idx, 'end')}
+                        style={{ left: `${segEndPct}%` }}
+                        className="absolute z-30 h-8 w-3 bg-sky-500 hover:bg-sky-400 active:bg-sky-300 rounded-r-md border-y border-r border-white/60 shadow-lg cursor-ew-resize flex items-center justify-center text-white transition-transform hover:scale-105 active:scale-110 group/endhandle"
+                        title={`Drag to trim end (Current: ${seg.endTime.toFixed(1)}s)`}
+                      >
+                        <div className="w-0.5 h-3 bg-white/80 rounded-full" />
+                        {/* Tooltip on hover/drag */}
+                        <div className="absolute -top-7 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded bg-slate-900 border border-sky-500 text-[9px] font-mono text-sky-300 font-bold whitespace-nowrap shadow-xl opacity-0 group-hover/endhandle:opacity-100 pointer-events-none transition-opacity">
+                          End: {seg.endTime.toFixed(1)}s
+                        </div>
+                      </div>
+                    )}
 
                     {/* Transition Join Handle between segments */}
                     {idx < project.videoSegments.length - 1 && (
@@ -400,3 +565,4 @@ function formatSeconds(sec: number): string {
   const ms = Math.floor((sec % 1) * 10);
   return `${m}:${s < 10 ? '0' : ''}${s}.${ms}`;
 }
+

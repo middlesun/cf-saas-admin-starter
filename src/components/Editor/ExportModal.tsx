@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ExportProgress, ExportOptions } from '../../lib/videoExporter';
-import { Sparkles, Download, CheckCircle2, AlertTriangle, X, Film, FileImage, Settings2, Play } from 'lucide-react';
+import { Sparkles, Download, CheckCircle2, AlertTriangle, X, Film, FileImage, Settings2, Play, RefreshCw, Eye } from 'lucide-react';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -11,6 +11,7 @@ interface ExportModalProps {
   onStartExport?: (options: ExportOptions) => void;
   isExporting: boolean;
   currentFormat?: 'mp4' | 'gif' | 'webm';
+  initialView?: 'settings' | 'preview';
 }
 
 export const ExportModal: React.FC<ExportModalProps> = ({
@@ -22,19 +23,45 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   onStartExport,
   isExporting,
   currentFormat = 'mp4',
+  initialView,
 }) => {
   const [selectedFormat, setSelectedFormat] = useState<'mp4' | 'gif' | 'webm'>(currentFormat);
   const [selectedResolution, setSelectedResolution] = useState<'720p' | '1080p' | '4k'>('1080p');
   const [selectedFps, setSelectedFps] = useState<number>(30);
   const [selectedQuality, setSelectedQuality] = useState<'medium' | 'high' | 'ultra'>('high');
+  const [modalView, setModalView] = useState<'settings' | 'preview'>('settings');
+
+  const isDone = progress.percentage >= 100 && exportedVideoUrl !== null;
+  const isRendering = isExporting && !isDone;
+
+  // Sync format changes from parent
+  useEffect(() => {
+    if (currentFormat) {
+      setSelectedFormat(currentFormat);
+    }
+  }, [currentFormat]);
+
+  // Determine initial view when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      if (initialView) {
+        setModalView(initialView);
+      } else if (isExporting) {
+        setModalView('preview');
+      } else if (exportedVideoUrl) {
+        // If an export already exists, show settings or preview
+        setModalView('settings');
+      } else {
+        setModalView('settings');
+      }
+    }
+  }, [isOpen, initialView, isExporting]);
 
   if (!isOpen) return null;
 
-  const isDone = progress.percentage >= 100 && exportedVideoUrl;
-  const isRendering = isExporting && !isDone;
-
   const handleStart = () => {
     if (onStartExport) {
+      setModalView('preview');
       onStartExport({
         format: selectedFormat,
         resolution: selectedResolution,
@@ -46,11 +73,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-6">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-800 pb-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
               {selectedFormat === 'gif' ? (
                 <FileImage className="w-5 h-5 text-amber-400" />
               ) : (
@@ -59,19 +86,23 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             </div>
             <div>
               <h3 className="font-bold text-slate-100 text-base">
-                {isDone
-                  ? 'Export Complete!'
-                  : isRendering
+                {isRendering
                   ? selectedFormat === 'gif'
                     ? 'Exporting Animated GIF...'
                     : 'Exporting Demo Video...'
+                  : modalView === 'preview' && isDone
+                  ? 'Export Complete!'
+                  : exportedVideoUrl
+                  ? 'Export Custom Settings'
                   : 'Export & Download Video'}
               </h3>
               <p className="text-xs text-slate-400">
-                {isDone
-                  ? 'Ready to save to your local drive'
-                  : isRendering
+                {isRendering
                   ? 'Rendering canvas frames, animations & audio'
+                  : modalView === 'preview' && isDone
+                  ? 'Ready to save to your local drive'
+                  : exportedVideoUrl
+                  ? 'Adjust settings and re-export without losing any edits'
                   : 'Choose format, resolution and quality settings'}
               </p>
             </div>
@@ -80,13 +111,45 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           <button
             onClick={onClose}
             className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-all"
+            title="Close export window"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Configuration State (Before Rendering Starts) */}
-        {!isRendering && !isDone && (
+        {/* View Switcher Tabs (Visible when previous export exists and not rendering) */}
+        {!isRendering && exportedVideoUrl && (
+          <div className="flex rounded-xl bg-slate-950/80 p-1 border border-slate-800 text-xs font-semibold">
+            <button
+              type="button"
+              onClick={() => setModalView('settings')}
+              className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-2 transition-all ${
+                modalView === 'settings'
+                  ? 'bg-sky-500 text-white shadow-md shadow-sky-500/20'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Settings2 className="w-3.5 h-3.5" />
+              <span>Export Custom Settings</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setModalView('preview')}
+              className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-2 transition-all ${
+                modalView === 'preview'
+                  ? 'bg-sky-500 text-white shadow-md shadow-sky-500/20'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>Exported Output</span>
+            </button>
+          </div>
+        )}
+
+        {/* Configuration View: Export Custom Settings */}
+        {!isRendering && modalView === 'settings' && (
           <div className="space-y-4 py-1">
             {/* Format Selection Cards */}
             <div>
@@ -208,14 +271,23 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 onClick={handleStart}
                 className="w-full py-3 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-xl shadow-sky-500/25 transition-all hover:scale-[1.01] active:scale-[0.99]"
               >
-                <Play className="w-4 h-4 fill-white" />
-                <span>Start Export ({selectedFormat.toUpperCase()})</span>
+                {exportedVideoUrl ? (
+                  <>
+                    <RefreshCw className="w-4 h-4" />
+                    <span>Re-export with New Settings ({selectedFormat.toUpperCase()})</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4 fill-white" />
+                    <span>Start Export ({selectedFormat.toUpperCase()})</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
         )}
 
-        {/* Progress Body */}
+        {/* Progress Body (While Rendering) */}
         {isRendering && (
           <div className="space-y-5 py-4">
             <div className="flex justify-between items-center text-xs font-semibold">
@@ -237,17 +309,17 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           </div>
         )}
 
-        {/* Finished / Ready for Download */}
-        {isDone && (
-          <div className="space-y-6 py-2">
-            <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs flex items-center gap-3">
+        {/* Finished / Ready for Download View */}
+        {!isRendering && modalView === 'preview' && isDone && (
+          <div className="space-y-5 py-1">
+            <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs flex items-center gap-3">
               <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-400" />
               <span>
                 Your {selectedFormat === 'gif' ? 'animated GIF' : 'demo video'} has been successfully generated and is ready for download!
               </span>
             </div>
 
-            {/* Preview */}
+            {/* Preview Output */}
             <div className="relative aspect-video rounded-xl bg-slate-950 border border-slate-800 overflow-hidden shadow-lg flex items-center justify-center">
               {selectedFormat === 'gif' ? (
                 <img src={exportedVideoUrl} alt="Exported GIF" className="w-full h-full object-contain" />
@@ -256,22 +328,33 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               )}
             </div>
 
-            <button
-              onClick={onDownload}
-              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-xl shadow-sky-500/25 transition-all hover:scale-[1.01]"
-            >
-              <Download className="w-4 h-4 stroke-[2.5]" />
-              <span>
-                Download {selectedFormat === 'gif' ? 'Animated GIF (.gif)' : 'Demo Video (.mp4)'}
-              </span>
-            </button>
+            <div className="space-y-2.5">
+              <button
+                onClick={onDownload}
+                className="w-full py-3.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-xl shadow-sky-500/25 transition-all hover:scale-[1.01]"
+              >
+                <Download className="w-4 h-4 stroke-[2.5]" />
+                <span>
+                  Download {selectedFormat === 'gif' ? 'Animated GIF (.gif)' : 'Demo Video (.mp4)'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setModalView('settings')}
+                className="w-full py-2.5 rounded-xl bg-slate-800/90 hover:bg-slate-700/90 text-slate-200 border border-slate-700/80 font-semibold text-xs flex items-center justify-center gap-2 transition-all"
+              >
+                <Settings2 className="w-4 h-4 text-sky-400" />
+                <span>Export Custom Settings (Change & Re-export)</span>
+              </button>
+            </div>
           </div>
         )}
 
         {/* Safety Note */}
-        <div className="flex items-center gap-2 text-[11px] text-slate-500 justify-center">
+        <div className="flex items-center gap-2 text-[11px] text-slate-500 justify-center pt-1 border-t border-slate-800/80">
           <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-          <span>Your video project is saved locally in IndexedDB even if you close this window.</span>
+          <span>Your video project and edits are preserved safely across all exports.</span>
         </div>
       </div>
     </div>

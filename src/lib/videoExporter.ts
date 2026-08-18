@@ -1,6 +1,9 @@
 import { Project, TextAnnotation, ClickAnimation, TransitionCard } from '../types';
 import { generateSynthesizedAudio } from './audioSynth';
 import { calculateZoomTransformAtTime } from './zoomSystem';
+import { encodeCanvasFramesToGif } from './gifEncoder';
+
+export { encodeCanvasFramesToGif };
 
 export interface ExportProgress {
   percentage: number;
@@ -15,168 +18,40 @@ export interface ExportOptions {
 }
 
 /**
- * Pure TypeScript Animated GIF (GIF89a) Encoder
+ * Asynchronously seeks the HTML5 video element and waits for the exact frame to decode
  */
-export function encodeCanvasFramesToGif(
-  frames: ImageData[],
-  width: number,
-  height: number,
-  fps: number
-): Blob {
-  const bytes: number[] = [];
-
-  const writeString = (str: string) => {
-    for (let i = 0; i < str.length; i++) bytes.push(str.charCodeAt(i));
-  };
-  const writeUint16 = (val: number) => {
-    bytes.push(val & 0xff);
-    bytes.push((val >> 8) & 0xff);
-  };
-
-  // Build a 256-color palette (6x6x6 color cube + 40 shades)
-  const palette: number[][] = [];
-  for (let r = 0; r < 6; r++) {
-    for (let g = 0; g < 6; g++) {
-      for (let b = 0; b < 6; b++) {
-        palette.push([
-          Math.round((r * 255) / 5),
-          Math.round((g * 255) / 5),
-          Math.round((b * 255) / 5),
-        ]);
-      }
-    }
-  }
-  for (let i = 0; i < 40; i++) {
-    const val = Math.round((i * 255) / 39);
-    palette.push([val, val, val]);
+async function seekVideoElement(video: HTMLVideoElement, targetTime: number): Promise<void> {
+  const safeTime = Math.max(0, Math.min(targetTime, video.duration || targetTime));
+  if (Math.abs(video.currentTime - safeTime) < 0.02 && video.readyState >= 2) {
+    return;
   }
 
-  const getColorIndex = (r: number, g: number, b: number): number => {
-    const ri = Math.min(5, Math.max(0, Math.round((r * 5) / 255)));
-    const gi = Math.min(5, Math.max(0, Math.round((g * 5) / 255)));
-    const bi = Math.min(5, Math.max(0, Math.round((b * 5) / 255)));
-    return ri * 36 + gi * 6 + bi;
-  };
-
-  // 1. Header & Logical Screen Descriptor
-  writeString('GIF89a');
-  writeUint16(width);
-  writeUint16(height);
-  bytes.push(0xf7); // Global color table present, 256 colors
-  bytes.push(0);
-  bytes.push(0);
-
-  // 2. Global Color Table (256 * 3 bytes)
-  for (let i = 0; i < 256; i++) {
-    bytes.push(palette[i][0], palette[i][1], palette[i][2]);
-  }
-
-  // 3. Netscape 2.0 Loop Extension
-  bytes.push(0x21, 0xff, 0x0b);
-  writeString('NETSCAPE2.0');
-  bytes.push(0x03, 0x01, 0x00, 0x00, 0x00);
-
-  const delayTime = Math.max(1, Math.round(100 / fps)); // 1/100ths sec
-
-  // 4. Frames
-  for (const frame of frames) {
-    // Graphic Control Extension
-    bytes.push(0x21, 0xf9, 0x04, 0x04);
-    writeUint16(delayTime);
-    bytes.push(0x00, 0x00);
-
-    // Image Descriptor
-    bytes.push(0x2c);
-    writeUint16(0);
-    writeUint16(0);
-    writeUint16(width);
-    writeUint16(height);
-    bytes.push(0x00);
-
-    const pixels = frame.data;
-    const indexedPixels = new Uint8Array(width * height);
-    for (let i = 0, j = 0; i < pixels.length; i += 4, j++) {
-      indexedPixels[j] = getColorIndex(pixels[i], pixels[i + 1], pixels[i + 2]);
-    }
-
-    const lzwMinCodeSize = 8;
-    bytes.push(lzwMinCodeSize);
-
-    const clearCode = 1 << lzwMinCodeSize;
-    const eoiCode = clearCode + 1;
-
-    let curCodeSize = lzwMinCodeSize + 1;
-    let nextCode = eoiCode + 1;
-
-    const dict = new Map<string, number>();
-    const resetDict = () => {
-      dict.clear();
-      for (let c = 0; c < clearCode; c++) {
-        dict.set(String.fromCharCode(c), c);
-      }
-      curCodeSize = lzwMinCodeSize + 1;
-      nextCode = eoiCode + 1;
-    };
-    resetDict();
-
-    const bitBuffer: number[] = [];
-    let curBits = 0;
-    let curBitCount = 0;
-
-    const emitBits = (code: number, bits: number) => {
-      curBits |= code << curBitCount;
-      curBitCount += bits;
-      while (curBitCount >= 8) {
-        bitBuffer.push(curBits & 0xff);
-        curBits >>= 8;
-        curBitCount -= 8;
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (!settled) {
+        settled = true;
+        video.removeEventListener('seeked', onSeeked);
+        video.removeEventListener('error', onError);
+        resolve();
       }
     };
+    const onSeeked = () => finish();
+    const onError = () => finish();
 
-    emitBits(clearCode, curCodeSize);
+    video.addEventListener('seeked', onSeeked, { once: true });
+    video.addEventListener('error', onError, { once: true });
 
-    let prefix = String.fromCharCode(indexedPixels[0]);
-    for (let p = 1; p < indexedPixels.length; p++) {
-      const k = String.fromCharCode(indexedPixels[p]);
-      const combined = prefix + k;
-      if (dict.has(combined)) {
-        prefix = combined;
-      } else {
-        emitBits(dict.get(prefix)!, curCodeSize);
-        if (nextCode < 4096) {
-          dict.set(combined, nextCode++);
-          if (nextCode > (1 << curCodeSize) && curCodeSize < 12) {
-            curCodeSize++;
-          }
-        } else {
-          emitBits(clearCode, curCodeSize);
-          resetDict();
-        }
-        prefix = k;
-      }
-    }
-    emitBits(dict.get(prefix)!, curCodeSize);
-    emitBits(eoiCode, curCodeSize);
-    if (curBitCount > 0) {
-      bitBuffer.push(curBits & 0xff);
+    try {
+      video.currentTime = safeTime;
+    } catch {
+      finish();
+      return;
     }
 
-    let offset = 0;
-    while (offset < bitBuffer.length) {
-      const blockSize = Math.min(254, bitBuffer.length - offset);
-      bytes.push(blockSize);
-      for (let b = 0; b < blockSize; b++) {
-        bytes.push(bitBuffer[offset + b]);
-      }
-      offset += blockSize;
-    }
-    bytes.push(0x00);
-  }
-
-  // 5. Trailer
-  bytes.push(0x3b);
-
-  return new Blob([new Uint8Array(bytes)], { type: 'image/gif' });
+    // Safety fallback timeout
+    setTimeout(finish, 200);
+  });
 }
 
 export async function renderAndExportVideo(
@@ -186,36 +61,50 @@ export async function renderAndExportVideo(
   options?: ExportOptions
 ): Promise<Blob> {
   const isGif = options?.format === 'gif';
-  
-  let width = 1280;
-  let height = 720;
-  
+
+  // Determine source dimensions and preserve exact native aspect ratio
+  const sourceWidth = videoElement.videoWidth || project.settings?.width || 1920;
+  const sourceHeight = videoElement.videoHeight || project.settings?.height || 1080;
+  const sourceAspect = sourceWidth / sourceHeight;
+
+  let width = sourceWidth;
+  let height = sourceHeight;
+
   if (options?.resolution === '1080p') {
-    width = 1920;
-    height = 1080;
+    if (sourceAspect >= 1) {
+      height = 1080;
+      width = Math.round(1080 * sourceAspect);
+    } else {
+      width = 1080;
+      height = Math.round(1080 / sourceAspect);
+    }
   } else if (options?.resolution === '720p') {
-    width = 1280;
-    height = 720;
+    if (sourceAspect >= 1) {
+      height = 720;
+      width = Math.round(720 * sourceAspect);
+    } else {
+      width = 720;
+      height = Math.round(720 / sourceAspect);
+    }
   } else if (options?.resolution === '4k') {
-    width = 3840;
-    height = 2160;
-  } else if (project.settings?.width && project.settings?.height) {
-    width = project.settings.width;
-    height = project.settings.height;
+    if (sourceAspect >= 1) {
+      height = 2160;
+      width = Math.round(2160 * sourceAspect);
+    } else {
+      width = 2160;
+      height = Math.round(2160 / sourceAspect);
+    }
   }
 
-  // For GIF, downscale width/height slightly to optimize render speed and size
-  if (isGif) {
-    width = Math.min(width, 800);
-    height = Math.round((width * 9) / 16);
-  }
+  // Ensure dimensions are even integers for standard frame encoding
+  width = Math.round(width / 2) * 2;
+  height = Math.round(height / 2) * 2;
 
-  let fps = options?.fps || project.settings?.fps || (isGif ? 15 : 30);
-  if (isGif && fps > 24) fps = 20;
+  let fps = options?.fps || project.settings?.fps || (isGif ? 20 : 30);
 
-  let videoBitsPerSecond = 6000000;
-  if (options?.quality === 'medium') videoBitsPerSecond = 3500000;
-  if (options?.quality === 'ultra') videoBitsPerSecond = 12000000;
+  let videoBitsPerSecond = 8000000;
+  if (options?.quality === 'medium') videoBitsPerSecond = 4000000;
+  if (options?.quality === 'ultra') videoBitsPerSecond = 16000000;
 
   onProgress({ percentage: 5, status: `Initializing ${isGif ? 'GIF' : 'video'} exporter engine...` });
 
@@ -226,11 +115,13 @@ export async function renderAndExportVideo(
   );
   const totalDuration = Math.max(totalVideoDuration, 1);
 
-  // Setup offscreen canvas
+  // Setup offscreen canvas with high smoothing
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext('2d')!;
+  const ctx = canvas.getContext('2d', { alpha: false }) || canvas.getContext('2d')!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
 
   if (isGif) {
     // GIF Frame Generation Loop
@@ -259,9 +150,8 @@ export async function renderAndExportVideo(
         renderTransitionCardFrame(ctx, width, height, activeTransition, currentTime - activeTransition.timestamp);
       } else {
         const sourceTime = calculateSourceTime(project, currentTime);
-        if (videoElement.readyState >= 2) {
-          videoElement.currentTime = sourceTime;
-          await new Promise((r) => setTimeout(r, 1000 / fps));
+        if (videoElement.readyState >= 1) {
+          await seekVideoElement(videoElement, sourceTime);
         }
 
         const zoom = calculateZoomTransformAtTime(project.zoomEvents || [], currentTime);
@@ -299,11 +189,13 @@ export async function renderAndExportVideo(
 
       const frameData = ctx.getImageData(0, 0, width, height);
       gifFrames.push(frameData);
-      await new Promise((r) => setTimeout(r, 10));
     }
 
-    onProgress({ percentage: 90, status: 'Compiling animated GIF color palette and compression...' });
-    const gifBlob = encodeCanvasFramesToGif(gifFrames, width, height, fps);
+    onProgress({ percentage: 88, status: 'Quantizing color palettes and compiling GIF89a frames...' });
+    const gifBlob = encodeCanvasFramesToGif(gifFrames, width, height, fps, {
+      dither: options?.quality !== 'medium',
+      quality: options?.quality || 'high',
+    });
     onProgress({ percentage: 100, status: 'GIF export complete!' });
     return gifBlob;
   }
@@ -412,9 +304,8 @@ export async function renderAndExportVideo(
     } else {
       // Seek video element to appropriate source timestamp
       const sourceTime = calculateSourceTime(project, currentTime);
-      if (videoElement.readyState >= 2) {
-        videoElement.currentTime = sourceTime;
-        await new Promise((r) => setTimeout(r, 1000 / fps));
+      if (videoElement.readyState >= 1) {
+        await seekVideoElement(videoElement, sourceTime);
       }
 
       // Calculate current Zoom Transform
