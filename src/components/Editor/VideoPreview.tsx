@@ -68,12 +68,10 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const timelineTrackRef = useRef<HTMLDivElement>(null);
-  const exportMenuRef = useRef<HTMLDivElement>(null);
 
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isDraggingAnnotation, setIsDraggingAnnotation] = useState<boolean>(false);
   const [addMode, setAddMode] = useState<'none' | 'click' | 'annotation'>('none');
-  const [isExportMenuOpen, setIsExportMenuOpen] = useState<boolean>(false);
 
   // Timeline Scrubbing & Hover States
   const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
@@ -82,19 +80,6 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
 
   const duration = Math.max(project.duration || 1, 0.1);
   const progressPercent = Math.min(100, Math.max(0, (currentTime / duration) * 100));
-
-  // Close export menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
-        setIsExportMenuOpen(false);
-      }
-    };
-    if (isExportMenuOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-    }
-  }, [isExportMenuOpen]);
 
   // Calculate live Zoom Transformation at currentTime
   const zoomTransform = calculateZoomTransformAtTime(project.zoomEvents || [], currentTime);
@@ -349,7 +334,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           </button>
         </div>
 
-        {/* Top-Right: Speed Controls + Export Controls */}
+        {/* Top-Right: Speed Controls */}
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-slate-400">
             <span>Speed:</span>
@@ -365,89 +350,6 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
                 {s}x
               </button>
             ))}
-          </div>
-
-          <div className="h-4 w-px bg-slate-800" />
-
-          {/* Download / Export Controls */}
-          <div className="relative" ref={exportMenuRef}>
-            <button
-              type="button"
-              onClick={() => setIsExportMenuOpen(!isExportMenuOpen)}
-              className="px-3 py-1 rounded-lg bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-sky-500/20 transition-all hover:scale-[1.02] active:scale-95"
-              title="Export / Download Video or GIF"
-            >
-              <Download className="w-3.5 h-3.5 stroke-[2.5]" />
-              <span>Export</span>
-              <ChevronDown className={`w-3 h-3 ml-0.5 transition-transform ${isExportMenuOpen ? 'rotate-180' : ''}`} />
-            </button>
-
-            {isExportMenuOpen && (
-              <div className="absolute right-0 top-full mt-2 w-64 rounded-xl bg-slate-900 border border-slate-700/80 shadow-2xl p-2 z-50 backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150">
-                <div className="px-2.5 py-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  Export Format
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsExportMenuOpen(false);
-                    if (onTriggerExport) {
-                      onTriggerExport({ format: 'mp4', resolution: '1080p', fps: 30, quality: 'high' });
-                    } else if (onOpenExportModal) {
-                      onOpenExportModal({ format: 'mp4' });
-                    }
-                  }}
-                  className="w-full px-2.5 py-2 rounded-lg text-left text-xs text-slate-200 hover:bg-sky-500/15 hover:text-sky-300 flex items-center gap-2.5 transition-all group"
-                >
-                  <Film className="w-4 h-4 text-sky-400 group-hover:scale-110 transition-transform" />
-                  <div>
-                    <div className="font-semibold text-slate-100 group-hover:text-sky-300">Video (MP4 / WebM)</div>
-                    <div className="text-[10px] text-slate-400">1080p Full HD with Audio</div>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsExportMenuOpen(false);
-                    if (onTriggerExport) {
-                      onTriggerExport({ format: 'gif', resolution: '720p', fps: 20, quality: 'high' });
-                    } else if (onOpenExportModal) {
-                      onOpenExportModal({ format: 'gif' });
-                    }
-                  }}
-                  className="w-full px-2.5 py-2 rounded-lg text-left text-xs text-slate-200 hover:bg-amber-500/15 hover:text-amber-300 flex items-center gap-2.5 transition-all group"
-                >
-                  <FileImage className="w-4 h-4 text-amber-400 group-hover:scale-110 transition-transform" />
-                  <div>
-                    <div className="font-semibold text-slate-100 group-hover:text-amber-300">Animated GIF</div>
-                    <div className="text-[10px] text-slate-400">Looping GIF for READMEs & docs</div>
-                  </div>
-                </button>
-
-                <div className="my-1 border-t border-slate-800" />
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsExportMenuOpen(false);
-                    if (onOpenExportModal) {
-                      onOpenExportModal();
-                    } else if (onTriggerExport) {
-                      onTriggerExport();
-                    }
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg text-left text-xs text-slate-300 hover:bg-slate-800 hover:text-white flex items-center justify-between transition-all"
-                >
-                  <span className="flex items-center gap-2">
-                    <Settings2 className="w-3.5 h-3.5 text-slate-400" />
-                    <span>Custom Settings...</span>
-                  </span>
-                  <span className="text-[10px] text-slate-500">4K, 60fps</span>
-                </button>
-              </div>
-            )}
           </div>
         </div>
       </div>

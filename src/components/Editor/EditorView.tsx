@@ -45,6 +45,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
   const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
   const [exportedFormat, setExportedFormat] = useState<'mp4' | 'gif' | 'webm'>('mp4');
   const [exportProgress, setExportProgress] = useState<ExportProgress>({ percentage: 0, status: '' });
+  const [exportedBlob, setExportedBlob] = useState<Blob | null>(null);
   const [exportedVideoUrl, setExportedVideoUrl] = useState<string | null>(null);
   const [isSaved, setIsSaved] = useState<boolean>(false);
   const [isSlideModalOpen, setIsSlideModalOpen] = useState<boolean>(false);
@@ -257,12 +258,12 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
 
   // Export Video Handler
   const handleExport = async (options?: ExportOptions) => {
-    if (!videoRef.current) return;
     const format = options?.format || 'mp4';
     setExportedFormat(format);
     setIsExporting(true);
     setIsExportModalOpen(true);
     setExportedVideoUrl(null);
+    setExportedBlob(null);
     setExportProgress({ percentage: 0, status: `Starting ${format.toUpperCase()} export process...` });
 
     try {
@@ -275,6 +276,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
         options
       );
       const url = URL.createObjectURL(blob);
+      setExportedBlob(blob);
       setExportedVideoUrl(url);
     } catch (err) {
       console.error('Export failed:', err);
@@ -286,7 +288,14 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
     if (!exportedVideoUrl) return;
     const a = document.createElement('a');
     a.href = exportedVideoUrl;
-    const ext = exportedFormat === 'gif' ? 'gif' : exportedFormat === 'mp4' ? 'mp4' : 'webm';
+    let ext = 'mp4';
+    if (exportedFormat === 'gif' || exportedBlob?.type.includes('gif')) {
+      ext = 'gif';
+    } else if (exportedBlob?.type.includes('webm')) {
+      ext = 'webm';
+    } else if (exportedBlob?.type.includes('mp4') || exportedFormat === 'mp4') {
+      ext = 'mp4';
+    }
     a.download = `${project.name.replace(/\s+/g, '_')}_Demo.${ext}`;
     a.click();
   };

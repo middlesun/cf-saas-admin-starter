@@ -89,35 +89,62 @@ function getActiveSegment(project: Project, timelineTime: number) {
 
 export async function renderAndExportVideo(
   project: Project,
-  videoElement: HTMLVideoElement,
+  sourceVideoElement: HTMLVideoElement | null,
   onProgress: (progress: ExportProgress) => void,
   options?: ExportOptions
 ): Promise<Blob> {
   const isGif = options?.format === 'gif';
 
-  // Ensure video element is ready
-  if (videoElement.readyState < 2) {
-    onProgress({ percentage: 2, status: 'Preparing video stream buffers...' });
-    await new Promise<void>((res) => {
-      const finish = () => {
-        videoElement.removeEventListener('loadeddata', finish);
-        videoElement.removeEventListener('canplay', finish);
-        res();
-      };
-      videoElement.addEventListener('loadeddata', finish, { once: true });
-      videoElement.addEventListener('canplay', finish, { once: true });
-      setTimeout(finish, 600);
-    });
+  // 1. Create a dedicated, isolated offscreen video element to prevent UI interference
+  const exportVideo = document.createElement('video');
+  exportVideo.muted = true;
+  exportVideo.playsInline = true;
+  exportVideo.crossOrigin = 'anonymous';
+  exportVideo.preload = 'auto';
+
+  let videoSrc = project.sourceVideoBlobUrl;
+  if (!videoSrc && project.sourceVideoBlob) {
+    videoSrc = URL.createObjectURL(project.sourceVideoBlob);
+  }
+  if (!videoSrc && sourceVideoElement?.src) {
+    videoSrc = sourceVideoElement.src;
   }
 
+  if (!videoSrc) {
+    throw new Error('No source video found to export.');
+  }
+
+  exportVideo.src = videoSrc;
+
+  // Ensure export video metadata is loaded
+  onProgress({ percentage: 3, status: 'Initializing video decoder engine...' });
+  await new Promise<void>((resolve) => {
+    if (exportVideo.readyState >= 1) {
+      resolve();
+      return;
+    }
+    const onLoaded = () => {
+      exportVideo.removeEventListener('loadedmetadata', onLoaded);
+      exportVideo.removeEventListener('canplay', onLoaded);
+      resolve();
+    };
+    exportVideo.addEventListener('loadedmetadata', onLoaded, { once: true });
+    exportVideo.addEventListener('canplay', onLoaded, { once: true });
+    setTimeout(resolve, 1200);
+  });
+
   // Determine native source dimensions & aspect ratio
-  const sourceWidth = videoElement.videoWidth || project.settings?.width || 1920;
-  const sourceHeight = videoElement.videoHeight || project.settings?.height || 1080;
+  const sourceWidth = exportVideo.videoWidth || sourceVideoElement?.videoWidth || project.settings?.width || 1920;
+  const sourceHeight = exportVideo.videoHeight || sourceVideoElement?.videoHeight || project.settings?.height || 1080;
   const sourceAspect = sourceWidth / Math.max(1, sourceHeight);
 
   // Calculate total timeline duration based on video segments & transitions
-  const totalVideoDuration = project.videoSegments.reduce(
-    (acc, seg) => acc + (seg.endTime - seg.startTime) / seg.speed,
+  const segments = project.videoSegments && project.videoSegments.length > 0
+    ? project.videoSegments
+    : [{ id: 'default_seg', startTime: 0, endTime: project.duration || exportVideo.duration || 10, speed: 1.0 }];
+
+  const totalVideoDuration = segments.reduce(
+    (acc, seg) => acc + (seg.endTime - seg.startTime) / (seg.speed || 1.0),
     0
   );
   const totalDuration = Math.max(totalVideoDuration, 0.5);
@@ -126,7 +153,6 @@ export async function renderAndExportVideo(
   // GIF EXPORT PIPELINE: Streaming Zero-Memory Encoder
   // -------------------------------------------------------------
   if (isGif) {
-    // Optimal dimensions profile for crisp, fast-loading animated GIFs
     let gifWidth = 800;
     if (options?.quality === 'medium') gifWidth = 640;
     if (options?.quality === 'ultra') gifWidth = 960;
@@ -155,17 +181,19 @@ export async function renderAndExportVideo(
       const currentTime = frame / gifFps;
       const progressPercent = Math.min(94, Math.floor(8 + (frame / totalFrames) * 86));
 
-      onProgress({
-        percentage: progressPercent,
-        status: `Rendering & encoding GIF frame ${frame + 1} of ${totalFrames} (${currentTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)...`,
-      });
+      if (frame % 3 === 0 || frame === totalFrames - 1) {
+        onProgress({
+          percentage: progressPercent,
+          status: `Rendering & encoding GIF frame ${frame + 1} of ${totalFrames} (${currentTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)...`,
+        });
+      }
 
       // Clear Canvas
       gifCtx.fillStyle = '#0f172a';
       gifCtx.fillRect(0, 0, gifWidth, gifHeight);
 
       // 1. Check Transition Card
-      const activeTransition = project.transitions.find(
+      const activeTransition = project.transitions?.find(
         (tr) => currentTime >= tr.timestamp && currentTime < tr.timestamp + tr.duration
       );
 
@@ -174,8 +202,8 @@ export async function renderAndExportVideo(
       } else {
         // 2. Video frame rendering
         const sourceTime = calculateSourceTime(project, currentTime);
-        if (videoElement.readyState >= 1) {
-          await seekVideoElement(videoElement, sourceTime);
+        if (exportVideo.readyState >= 1) {
+          await seekVideoElement(exportVideo, sourceTime);
         }
 
         const zoom = calculateZoomTransformAtTime(project.zoomEvents || [], currentTime);
@@ -190,21 +218,21 @@ export async function renderAndExportVideo(
         }
 
         try {
-          gifCtx.drawImage(videoElement, 0, 0, gifWidth, gifHeight);
+          gifCtx.drawImage(exportVideo, 0, 0, gifWidth, gifHeight);
         } catch {
           gifCtx.fillStyle = '#0f172a';
           gifCtx.fillRect(0, 0, gifWidth, gifHeight);
         }
 
         // Draw Clicks
-        project.clickAnimations.forEach((click) => {
+        project.clickAnimations?.forEach((click) => {
           if (currentTime >= click.timestamp && currentTime <= click.timestamp + click.duration) {
             renderClickAnimation(gifCtx, gifWidth, gifHeight, click, currentTime - click.timestamp);
           }
         });
 
         // Draw Annotations
-        project.annotations.forEach((ann) => {
+        project.annotations?.forEach((ann) => {
           if (currentTime >= ann.startTime && currentTime <= ann.startTime + ann.duration) {
             renderAnnotation(gifCtx, gifWidth, gifHeight, ann, currentTime - ann.startTime);
           }
@@ -219,20 +247,24 @@ export async function renderAndExportVideo(
         dither: options?.quality !== 'medium',
       });
 
-      // Yield every 4 frames so UI stays responsive
-      if (frame % 4 === 0) {
+      // Yield every 3 frames so UI stays responsive
+      if (frame % 3 === 0) {
         await new Promise((r) => setTimeout(r, 0));
       }
     }
 
     onProgress({ percentage: 97, status: 'Finalizing GIF89a file...' });
     const gifBlob = gifEncoder.finish();
+    try {
+      exportVideo.pause();
+      exportVideo.src = '';
+    } catch {}
     onProgress({ percentage: 100, status: 'GIF export complete!' });
     return gifBlob;
   }
 
   // -------------------------------------------------------------
-  // VIDEO EXPORT PIPELINE: Real-Time Synchronized Canvas Stream
+  // VIDEO EXPORT PIPELINE: Smooth Real-Time Playback Recorder
   // -------------------------------------------------------------
   let width = sourceWidth;
   let height = sourceHeight;
@@ -368,9 +400,17 @@ export async function renderAndExportVideo(
   });
 
   // Prepare source video element for playback recording
-  videoElement.muted = true;
-  videoElement.playsInline = true;
-  videoElement.currentTime = calculateSourceTime(project, 0);
+  exportVideo.muted = true;
+  exportVideo.playsInline = true;
+  const initialSourceTime = calculateSourceTime(project, 0);
+  await seekVideoElement(exportVideo, initialSourceTime);
+
+  // Prime the canvas with the first frame
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, 0, width, height);
+  try {
+    ctx.drawImage(exportVideo, 0, 0, width, height);
+  } catch {}
 
   // Start recording
   mediaRecorder.start(100);
@@ -381,53 +421,55 @@ export async function renderAndExportVideo(
   }
 
   const exportStartTime = performance.now();
-  await videoElement.play().catch(() => {});
+  let lastActiveSegId = segments[0]?.id || '';
+  exportVideo.playbackRate = segments[0]?.speed || 1.0;
+  await exportVideo.play().catch(() => {});
 
   // High-precision real-time render engine
   await new Promise<void>((resolve) => {
     let animId: number;
+    let lastProgressUpdate = 0;
 
     const tick = () => {
       const now = performance.now();
       const elapsedSeconds = (now - exportStartTime) / 1000;
       const currentTimelineTime = Math.min(elapsedSeconds, totalDuration);
 
-      const progressPct = Math.min(95, Math.floor(10 + (currentTimelineTime / totalDuration) * 85));
-      onProgress({
-        percentage: progressPct,
-        status: `Recording video (${currentTimelineTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)...`,
-      });
+      // Throttled progress reporting (every 250ms)
+      if (now - lastProgressUpdate > 250 || currentTimelineTime >= totalDuration) {
+        lastProgressUpdate = now;
+        const progressPct = Math.min(95, Math.floor(10 + (currentTimelineTime / totalDuration) * 85));
+        onProgress({
+          percentage: progressPct,
+          status: `Recording video (${currentTimelineTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)...`,
+        });
+      }
 
       // Clear Canvas
       ctx.fillStyle = '#0f172a';
       ctx.fillRect(0, 0, width, height);
 
       // Check for Transition Card
-      const activeTransition = project.transitions.find(
+      const activeTransition = project.transitions?.find(
         (tr) => currentTimelineTime >= tr.timestamp && currentTimelineTime < tr.timestamp + tr.duration
       );
 
       if (activeTransition) {
-        if (!videoElement.paused) {
-          videoElement.pause();
+        if (!exportVideo.paused) {
+          exportVideo.pause();
         }
         renderTransitionCardFrame(ctx, width, height, activeTransition, currentTimelineTime - activeTransition.timestamp);
       } else {
         // Active video segment synchronization
-        const targetSourceTime = calculateSourceTime(project, currentTimelineTime);
         const activeSeg = getActiveSegment(project, currentTimelineTime);
-        const targetSpeed = activeSeg ? activeSeg.speed : 1.0;
-
-        if (videoElement.paused) {
-          videoElement.play().catch(() => {});
-        }
-        if (Math.abs(videoElement.playbackRate - targetSpeed) > 0.05) {
-          videoElement.playbackRate = targetSpeed;
+        if (activeSeg && activeSeg.id !== lastActiveSegId) {
+          lastActiveSegId = activeSeg.id;
+          exportVideo.currentTime = activeSeg.startTime;
+          exportVideo.playbackRate = activeSeg.speed || 1.0;
         }
 
-        // Resync if video element drifted significantly (> 0.25s)
-        if (Math.abs(videoElement.currentTime - targetSourceTime) > 0.25) {
-          videoElement.currentTime = targetSourceTime;
+        if (exportVideo.paused) {
+          exportVideo.play().catch(() => {});
         }
 
         // Apply Zoom Transform
@@ -444,21 +486,21 @@ export async function renderAndExportVideo(
 
         // Draw Video Frame
         try {
-          ctx.drawImage(videoElement, 0, 0, width, height);
+          ctx.drawImage(exportVideo, 0, 0, width, height);
         } catch {
           ctx.fillStyle = '#0f172a';
           ctx.fillRect(0, 0, width, height);
         }
 
         // Draw Clicks active at current time
-        project.clickAnimations.forEach((click) => {
+        project.clickAnimations?.forEach((click) => {
           if (currentTimelineTime >= click.timestamp && currentTimelineTime <= click.timestamp + click.duration) {
             renderClickAnimation(ctx, width, height, click, currentTimelineTime - click.timestamp);
           }
         });
 
         // Draw Annotations active at current time
-        project.annotations.forEach((ann) => {
+        project.annotations?.forEach((ann) => {
           if (currentTimelineTime >= ann.startTime && currentTimelineTime <= ann.startTime + ann.duration) {
             renderAnnotation(ctx, width, height, ann, currentTimelineTime - ann.startTime);
           }
@@ -485,8 +527,8 @@ export async function renderAndExportVideo(
   } catch {}
 
   try {
-    videoElement.pause();
-    videoElement.playbackRate = 1.0;
+    exportVideo.pause();
+    exportVideo.src = '';
   } catch {}
 
   if (audioBufferSource) {
