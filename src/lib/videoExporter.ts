@@ -1,7 +1,7 @@
 import { Project, TextAnnotation, ClickAnimation, TransitionCard } from '../types';
 import { generateSynthesizedAudio } from './audioSynth';
 import { calculateZoomTransformAtTime } from './zoomSystem';
-import { encodeCanvasFramesToGif } from './gifEncoder';
+import { StreamingGifEncoder, encodeCanvasFramesToGif } from './gifEncoder';
 
 export { encodeCanvasFramesToGif };
 
@@ -18,11 +18,11 @@ export interface ExportOptions {
 }
 
 /**
- * Asynchronously seeks the HTML5 video element and waits for the exact frame to decode
+ * Fast asynchronous video seek helper with safety fallback
  */
 async function seekVideoElement(video: HTMLVideoElement, targetTime: number): Promise<void> {
   const safeTime = Math.max(0, Math.min(targetTime, video.duration || targetTime));
-  if (Math.abs(video.currentTime - safeTime) < 0.02 && video.readyState >= 2) {
+  if (Math.abs(video.currentTime - safeTime) < 0.03 && video.readyState >= 2) {
     return;
   }
 
@@ -49,9 +49,42 @@ async function seekVideoElement(video: HTMLVideoElement, targetTime: number): Pr
       return;
     }
 
-    // Safety fallback timeout
-    setTimeout(finish, 200);
+    // Safety fallback timeout for instant resolution
+    setTimeout(finish, 120);
   });
+}
+
+/**
+ * Calculates the mapped source video timestamp for a given timeline time
+ */
+export function calculateSourceTime(project: Project, timelineTime: number): number {
+  let accumulated = 0;
+
+  for (const seg of project.videoSegments) {
+    const segDuration = (seg.endTime - seg.startTime) / seg.speed;
+    if (timelineTime >= accumulated && timelineTime <= accumulated + segDuration) {
+      const elapsedInSeg = (timelineTime - accumulated) * seg.speed;
+      return seg.startTime + elapsedInSeg;
+    }
+    accumulated += segDuration;
+  }
+
+  return project.duration || 0;
+}
+
+/**
+ * Finds the active video segment for a given timeline time
+ */
+function getActiveSegment(project: Project, timelineTime: number) {
+  let accumulated = 0;
+  for (const seg of project.videoSegments) {
+    const segDuration = (seg.endTime - seg.startTime) / seg.speed;
+    if (timelineTime >= accumulated && timelineTime <= accumulated + segDuration) {
+      return seg;
+    }
+    accumulated += segDuration;
+  }
+  return project.videoSegments[project.videoSegments.length - 1] || null;
 }
 
 export async function renderAndExportVideo(
@@ -62,11 +95,145 @@ export async function renderAndExportVideo(
 ): Promise<Blob> {
   const isGif = options?.format === 'gif';
 
-  // Determine source dimensions and preserve exact native aspect ratio
+  // Ensure video element is ready
+  if (videoElement.readyState < 2) {
+    onProgress({ percentage: 2, status: 'Preparing video stream buffers...' });
+    await new Promise<void>((res) => {
+      const finish = () => {
+        videoElement.removeEventListener('loadeddata', finish);
+        videoElement.removeEventListener('canplay', finish);
+        res();
+      };
+      videoElement.addEventListener('loadeddata', finish, { once: true });
+      videoElement.addEventListener('canplay', finish, { once: true });
+      setTimeout(finish, 600);
+    });
+  }
+
+  // Determine native source dimensions & aspect ratio
   const sourceWidth = videoElement.videoWidth || project.settings?.width || 1920;
   const sourceHeight = videoElement.videoHeight || project.settings?.height || 1080;
-  const sourceAspect = sourceWidth / sourceHeight;
+  const sourceAspect = sourceWidth / Math.max(1, sourceHeight);
 
+  // Calculate total timeline duration based on video segments & transitions
+  const totalVideoDuration = project.videoSegments.reduce(
+    (acc, seg) => acc + (seg.endTime - seg.startTime) / seg.speed,
+    0
+  );
+  const totalDuration = Math.max(totalVideoDuration, 0.5);
+
+  // -------------------------------------------------------------
+  // GIF EXPORT PIPELINE: Streaming Zero-Memory Encoder
+  // -------------------------------------------------------------
+  if (isGif) {
+    // Optimal dimensions profile for crisp, fast-loading animated GIFs
+    let gifWidth = 800;
+    if (options?.quality === 'medium') gifWidth = 640;
+    if (options?.quality === 'ultra') gifWidth = 960;
+    if (options?.resolution === '720p') gifWidth = Math.min(1280, Math.round(720 * sourceAspect));
+
+    let gifHeight = Math.round(gifWidth / sourceAspect);
+    gifWidth = Math.round(gifWidth / 2) * 2;
+    gifHeight = Math.round(gifHeight / 2) * 2;
+
+    const gifFps = options?.fps || 15;
+    const totalFrames = Math.max(1, Math.ceil(totalDuration * gifFps));
+    const delayHundredths = Math.max(2, Math.round(100 / gifFps));
+
+    onProgress({ percentage: 5, status: `Initializing streaming GIF engine (${gifWidth}x${gifHeight} @ ${gifFps}fps)...` });
+
+    const gifCanvas = document.createElement('canvas');
+    gifCanvas.width = gifWidth;
+    gifCanvas.height = gifHeight;
+    const gifCtx = gifCanvas.getContext('2d', { alpha: false }) || gifCanvas.getContext('2d')!;
+    gifCtx.imageSmoothingEnabled = true;
+    gifCtx.imageSmoothingQuality = 'high';
+
+    const gifEncoder = new StreamingGifEncoder(gifWidth, gifHeight);
+
+    for (let frame = 0; frame < totalFrames; frame++) {
+      const currentTime = frame / gifFps;
+      const progressPercent = Math.min(94, Math.floor(8 + (frame / totalFrames) * 86));
+
+      onProgress({
+        percentage: progressPercent,
+        status: `Rendering & encoding GIF frame ${frame + 1} of ${totalFrames} (${currentTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)...`,
+      });
+
+      // Clear Canvas
+      gifCtx.fillStyle = '#0f172a';
+      gifCtx.fillRect(0, 0, gifWidth, gifHeight);
+
+      // 1. Check Transition Card
+      const activeTransition = project.transitions.find(
+        (tr) => currentTime >= tr.timestamp && currentTime < tr.timestamp + tr.duration
+      );
+
+      if (activeTransition) {
+        renderTransitionCardFrame(gifCtx, gifWidth, gifHeight, activeTransition, currentTime - activeTransition.timestamp);
+      } else {
+        // 2. Video frame rendering
+        const sourceTime = calculateSourceTime(project, currentTime);
+        if (videoElement.readyState >= 1) {
+          await seekVideoElement(videoElement, sourceTime);
+        }
+
+        const zoom = calculateZoomTransformAtTime(project.zoomEvents || [], currentTime);
+
+        gifCtx.save();
+        if (zoom.scale > 1.0) {
+          const centerX = (zoom.x / 100) * gifWidth;
+          const centerY = (zoom.y / 100) * gifHeight;
+          gifCtx.translate(centerX, centerY);
+          gifCtx.scale(zoom.scale, zoom.scale);
+          gifCtx.translate(-centerX, -centerY);
+        }
+
+        try {
+          gifCtx.drawImage(videoElement, 0, 0, gifWidth, gifHeight);
+        } catch {
+          gifCtx.fillStyle = '#0f172a';
+          gifCtx.fillRect(0, 0, gifWidth, gifHeight);
+        }
+
+        // Draw Clicks
+        project.clickAnimations.forEach((click) => {
+          if (currentTime >= click.timestamp && currentTime <= click.timestamp + click.duration) {
+            renderClickAnimation(gifCtx, gifWidth, gifHeight, click, currentTime - click.timestamp);
+          }
+        });
+
+        // Draw Annotations
+        project.annotations.forEach((ann) => {
+          if (currentTime >= ann.startTime && currentTime <= ann.startTime + ann.duration) {
+            renderAnnotation(gifCtx, gifWidth, gifHeight, ann, currentTime - ann.startTime);
+          }
+        });
+
+        gifCtx.restore();
+      }
+
+      // Stream frame directly into binary GIF encoder (ImageData is immediately discarded)
+      const frameData = gifCtx.getImageData(0, 0, gifWidth, gifHeight);
+      gifEncoder.addFrame(frameData, delayHundredths, {
+        dither: options?.quality !== 'medium',
+      });
+
+      // Yield every 4 frames so UI stays responsive
+      if (frame % 4 === 0) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+
+    onProgress({ percentage: 97, status: 'Finalizing GIF89a file...' });
+    const gifBlob = gifEncoder.finish();
+    onProgress({ percentage: 100, status: 'GIF export complete!' });
+    return gifBlob;
+  }
+
+  // -------------------------------------------------------------
+  // VIDEO EXPORT PIPELINE: Real-Time Synchronized Canvas Stream
+  // -------------------------------------------------------------
   let width = sourceWidth;
   let height = sourceHeight;
 
@@ -96,26 +263,17 @@ export async function renderAndExportVideo(
     }
   }
 
-  // Ensure dimensions are even integers for standard frame encoding
   width = Math.round(width / 2) * 2;
   height = Math.round(height / 2) * 2;
 
-  let fps = options?.fps || project.settings?.fps || (isGif ? 20 : 30);
+  const fps = options?.fps || project.settings?.fps || 30;
 
   let videoBitsPerSecond = 8000000;
   if (options?.quality === 'medium') videoBitsPerSecond = 4000000;
   if (options?.quality === 'ultra') videoBitsPerSecond = 16000000;
 
-  onProgress({ percentage: 5, status: `Initializing ${isGif ? 'GIF' : 'video'} exporter engine...` });
+  onProgress({ percentage: 5, status: `Initializing real-time video recorder (${width}x${height} @ ${fps}fps)...` });
 
-  // Calculate total timeline duration based on video segments & transitions
-  const totalVideoDuration = project.videoSegments.reduce(
-    (acc, seg) => acc + (seg.endTime - seg.startTime) / seg.speed,
-    0
-  );
-  const totalDuration = Math.max(totalVideoDuration, 1);
-
-  // Setup offscreen canvas with high smoothing
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -123,89 +281,12 @@ export async function renderAndExportVideo(
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
 
-  if (isGif) {
-    // GIF Frame Generation Loop
-    const totalFrames = Math.ceil(totalDuration * fps);
-    const gifFrames: ImageData[] = [];
-
-    for (let frame = 0; frame < totalFrames; frame++) {
-      const currentTime = frame / fps;
-      const currentPercent = Math.min(85, Math.floor(10 + (frame / totalFrames) * 75));
-
-      onProgress({
-        percentage: currentPercent,
-        status: `Rendering GIF frame ${frame + 1} of ${totalFrames} (${currentTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)`,
-      });
-
-      // Clear Canvas
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(0, 0, width, height);
-
-      // Check transition
-      const activeTransition = project.transitions.find(
-        (tr) => currentTime >= tr.timestamp && currentTime < tr.timestamp + tr.duration
-      );
-
-      if (activeTransition) {
-        renderTransitionCardFrame(ctx, width, height, activeTransition, currentTime - activeTransition.timestamp);
-      } else {
-        const sourceTime = calculateSourceTime(project, currentTime);
-        if (videoElement.readyState >= 1) {
-          await seekVideoElement(videoElement, sourceTime);
-        }
-
-        const zoom = calculateZoomTransformAtTime(project.zoomEvents || [], currentTime);
-
-        ctx.save();
-        if (zoom.scale > 1.0) {
-          const centerX = (zoom.x / 100) * width;
-          const centerY = (zoom.y / 100) * height;
-          ctx.translate(centerX, centerY);
-          ctx.scale(zoom.scale, zoom.scale);
-          ctx.translate(-centerX, -centerY);
-        }
-
-        try {
-          ctx.drawImage(videoElement, 0, 0, width, height);
-        } catch {
-          ctx.fillStyle = '#0f172a';
-          ctx.fillRect(0, 0, width, height);
-        }
-
-        project.clickAnimations.forEach((click) => {
-          if (currentTime >= click.timestamp && currentTime <= click.timestamp + click.duration) {
-            renderClickAnimation(ctx, width, height, click, currentTime - click.timestamp);
-          }
-        });
-
-        project.annotations.forEach((ann) => {
-          if (currentTime >= ann.startTime && currentTime <= ann.startTime + ann.duration) {
-            renderAnnotation(ctx, width, height, ann, currentTime - ann.startTime);
-          }
-        });
-
-        ctx.restore();
-      }
-
-      const frameData = ctx.getImageData(0, 0, width, height);
-      gifFrames.push(frameData);
-    }
-
-    onProgress({ percentage: 88, status: 'Quantizing color palettes and compiling GIF89a frames...' });
-    const gifBlob = encodeCanvasFramesToGif(gifFrames, width, height, fps, {
-      dither: options?.quality !== 'medium',
-      quality: options?.quality || 'high',
-    });
-    onProgress({ percentage: 100, status: 'GIF export complete!' });
-    return gifBlob;
-  }
-
-  // Video Export (MP4 / WebM with Audio)
+  // Setup Web Audio Stream
   let audioContext: AudioContext | null = null;
   let audioBufferSource: AudioBufferSourceNode | null = null;
   let mediaStreamDestination: MediaStreamAudioDestinationNode | null = null;
 
-  if (project.audioTracks.length > 0) {
+  if (project.audioTracks && project.audioTracks.length > 0) {
     const track = project.audioTracks[0];
     try {
       audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
@@ -215,7 +296,7 @@ export async function renderAndExportVideo(
 
       let audioBlob: Blob | null = null;
       if (track.presetId) {
-        onProgress({ percentage: 10, status: 'Synthesizing background audio track...' });
+        onProgress({ percentage: 8, status: 'Synthesizing soundtrack...' });
         const res = await generateSynthesizedAudio(track.presetId, totalDuration);
         audioBlob = res.blob;
       }
@@ -237,15 +318,13 @@ export async function renderAndExportVideo(
         } else {
           gainNode.connect(audioContext.destination);
         }
-
-        audioBufferSource.start(0);
       }
     } catch (e) {
-      console.warn('Audio setup warning:', e);
+      console.warn('Audio synthesis warning:', e);
     }
   }
 
-  // Combine Canvas Stream + Audio Stream
+  // Combine Canvas Video Track + Web Audio Track
   const canvasStream = canvas.captureStream(fps);
   const combinedStream = new MediaStream();
 
@@ -254,24 +333,32 @@ export async function renderAndExportVideo(
     mediaStreamDestination.stream.getAudioTracks().forEach((t) => combinedStream.addTrack(t));
   }
 
-  // Setup MediaRecorder
+  // Select optimal supported container & codec
   let mimeType = 'video/webm;codecs=vp9';
-  if (options?.format === 'mp4' && MediaRecorder.isTypeSupported('video/mp4;codecs=avc1')) {
-    mimeType = 'video/mp4;codecs=avc1';
-  } else if (options?.format === 'mp4' && MediaRecorder.isTypeSupported('video/mp4')) {
-    mimeType = 'video/mp4';
-  } else if (!MediaRecorder.isTypeSupported(mimeType)) {
-    mimeType = 'video/webm';
+  if (options?.format === 'mp4') {
+    if (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1,mp4a.40.2')) {
+      mimeType = 'video/mp4;codecs=avc1,mp4a.40.2';
+    } else if (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1')) {
+      mimeType = 'video/mp4;codecs=avc1';
+    } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+      mimeType = 'video/mp4';
+    }
   }
 
+  if (!MediaRecorder.isTypeSupported(mimeType)) {
+    mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+      ? 'video/webm;codecs=vp9,opus'
+      : 'video/webm';
+  }
+
+  const chunks: Blob[] = [];
   const mediaRecorder = new MediaRecorder(combinedStream, {
     mimeType,
     videoBitsPerSecond,
   });
 
-  const chunks: Blob[] = [];
   mediaRecorder.ondataavailable = (e) => {
-    if (e.data.size > 0) chunks.push(e.data);
+    if (e.data && e.data.size > 0) chunks.push(e.data);
   };
 
   const exportPromise = new Promise<Blob>((resolve) => {
@@ -280,75 +367,128 @@ export async function renderAndExportVideo(
     };
   });
 
-  mediaRecorder.start();
+  // Prepare source video element for playback recording
+  videoElement.muted = true;
+  videoElement.playsInline = true;
+  videoElement.currentTime = calculateSourceTime(project, 0);
 
-  const totalFrames = Math.ceil(totalDuration * fps);
-
-  // Frame by frame rendering loop
-  for (let frame = 0; frame < totalFrames; frame++) {
-    const currentTime = frame / fps;
-    const currentPercent = Math.min(95, Math.floor(15 + (frame / totalFrames) * 80));
-
-    onProgress({
-      percentage: currentPercent,
-      status: `Rendering frame ${frame + 1} of ${totalFrames} (${currentTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)`,
-    });
-
-    // Check if current time falls within a Transition Card
-    const activeTransition = project.transitions.find(
-      (tr) => currentTime >= tr.timestamp && currentTime < tr.timestamp + tr.duration
-    );
-
-    if (activeTransition) {
-      renderTransitionCardFrame(ctx, width, height, activeTransition, currentTime - activeTransition.timestamp);
-    } else {
-      // Seek video element to appropriate source timestamp
-      const sourceTime = calculateSourceTime(project, currentTime);
-      if (videoElement.readyState >= 1) {
-        await seekVideoElement(videoElement, sourceTime);
-      }
-
-      // Calculate current Zoom Transform
-      const zoom = calculateZoomTransformAtTime(project.zoomEvents || [], currentTime);
-
-      ctx.save();
-      if (zoom.scale > 1.0) {
-        const centerX = (zoom.x / 100) * width;
-        const centerY = (zoom.y / 100) * height;
-        ctx.translate(centerX, centerY);
-        ctx.scale(zoom.scale, zoom.scale);
-        ctx.translate(-centerX, -centerY);
-      }
-
-      // Draw Video frame
-      try {
-        ctx.drawImage(videoElement, 0, 0, width, height);
-      } catch {
-        ctx.fillStyle = '#0f172a';
-        ctx.fillRect(0, 0, width, height);
-      }
-
-      // Draw Click Animations active at currentTime
-      project.clickAnimations.forEach((click) => {
-        if (currentTime >= click.timestamp && currentTime <= click.timestamp + click.duration) {
-          renderClickAnimation(ctx, width, height, click, currentTime - click.timestamp);
-        }
-      });
-
-      // Draw Text Annotations active at currentTime
-      project.annotations.forEach((ann) => {
-        if (currentTime >= ann.startTime && currentTime <= ann.startTime + ann.duration) {
-          renderAnnotation(ctx, width, height, ann, currentTime - ann.startTime);
-        }
-      });
-
-      ctx.restore();
-    }
-
-    await new Promise((r) => setTimeout(r, 1000 / fps));
+  // Start recording
+  mediaRecorder.start(100);
+  if (audioBufferSource && audioContext) {
+    try {
+      audioBufferSource.start(0);
+    } catch {}
   }
 
-  mediaRecorder.stop();
+  const exportStartTime = performance.now();
+  await videoElement.play().catch(() => {});
+
+  // High-precision real-time render engine
+  await new Promise<void>((resolve) => {
+    let animId: number;
+
+    const tick = () => {
+      const now = performance.now();
+      const elapsedSeconds = (now - exportStartTime) / 1000;
+      const currentTimelineTime = Math.min(elapsedSeconds, totalDuration);
+
+      const progressPct = Math.min(95, Math.floor(10 + (currentTimelineTime / totalDuration) * 85));
+      onProgress({
+        percentage: progressPct,
+        status: `Recording video (${currentTimelineTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)...`,
+      });
+
+      // Clear Canvas
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, width, height);
+
+      // Check for Transition Card
+      const activeTransition = project.transitions.find(
+        (tr) => currentTimelineTime >= tr.timestamp && currentTimelineTime < tr.timestamp + tr.duration
+      );
+
+      if (activeTransition) {
+        if (!videoElement.paused) {
+          videoElement.pause();
+        }
+        renderTransitionCardFrame(ctx, width, height, activeTransition, currentTimelineTime - activeTransition.timestamp);
+      } else {
+        // Active video segment synchronization
+        const targetSourceTime = calculateSourceTime(project, currentTimelineTime);
+        const activeSeg = getActiveSegment(project, currentTimelineTime);
+        const targetSpeed = activeSeg ? activeSeg.speed : 1.0;
+
+        if (videoElement.paused) {
+          videoElement.play().catch(() => {});
+        }
+        if (Math.abs(videoElement.playbackRate - targetSpeed) > 0.05) {
+          videoElement.playbackRate = targetSpeed;
+        }
+
+        // Resync if video element drifted significantly (> 0.25s)
+        if (Math.abs(videoElement.currentTime - targetSourceTime) > 0.25) {
+          videoElement.currentTime = targetSourceTime;
+        }
+
+        // Apply Zoom Transform
+        const zoom = calculateZoomTransformAtTime(project.zoomEvents || [], currentTimelineTime);
+
+        ctx.save();
+        if (zoom.scale > 1.0) {
+          const centerX = (zoom.x / 100) * width;
+          const centerY = (zoom.y / 100) * height;
+          ctx.translate(centerX, centerY);
+          ctx.scale(zoom.scale, zoom.scale);
+          ctx.translate(-centerX, -centerY);
+        }
+
+        // Draw Video Frame
+        try {
+          ctx.drawImage(videoElement, 0, 0, width, height);
+        } catch {
+          ctx.fillStyle = '#0f172a';
+          ctx.fillRect(0, 0, width, height);
+        }
+
+        // Draw Clicks active at current time
+        project.clickAnimations.forEach((click) => {
+          if (currentTimelineTime >= click.timestamp && currentTimelineTime <= click.timestamp + click.duration) {
+            renderClickAnimation(ctx, width, height, click, currentTimelineTime - click.timestamp);
+          }
+        });
+
+        // Draw Annotations active at current time
+        project.annotations.forEach((ann) => {
+          if (currentTimelineTime >= ann.startTime && currentTimelineTime <= ann.startTime + ann.duration) {
+            renderAnnotation(ctx, width, height, ann, currentTimelineTime - ann.startTime);
+          }
+        });
+
+        ctx.restore();
+      }
+
+      if (currentTimelineTime >= totalDuration) {
+        cancelAnimationFrame(animId);
+        resolve();
+        return;
+      }
+
+      animId = requestAnimationFrame(tick);
+    };
+
+    animId = requestAnimationFrame(tick);
+  });
+
+  // Stop recorder and cleanup media elements
+  try {
+    mediaRecorder.stop();
+  } catch {}
+
+  try {
+    videoElement.pause();
+    videoElement.playbackRate = 1.0;
+  } catch {}
+
   if (audioBufferSource) {
     try {
       audioBufferSource.stop();
@@ -360,29 +500,11 @@ export async function renderAndExportVideo(
     } catch {}
   }
 
-  onProgress({ percentage: 98, status: `Finalizing ${options?.format === 'mp4' ? 'MP4' : 'WebM'} video package...` });
+  onProgress({ percentage: 98, status: `Packaging final ${options?.format === 'mp4' ? 'MP4' : 'WebM'} video...` });
   const finalBlob = await exportPromise;
   onProgress({ percentage: 100, status: 'Export complete!' });
 
   return finalBlob;
-}
-
-/**
- * Calculates the mapped source video timestamp for a given timeline time
- */
-function calculateSourceTime(project: Project, timelineTime: number): number {
-  let accumulated = 0;
-
-  for (const seg of project.videoSegments) {
-    const segDuration = (seg.endTime - seg.startTime) / seg.speed;
-    if (timelineTime >= accumulated && timelineTime <= accumulated + segDuration) {
-      const elapsedInSeg = (timelineTime - accumulated) * seg.speed;
-      return seg.startTime + elapsedInSeg;
-    }
-    accumulated += segDuration;
-  }
-
-  return project.duration || 0;
 }
 
 /**
