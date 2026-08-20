@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ExportProgress, ExportOptions } from '../../lib/videoExporter';
-import { Sparkles, Download, CheckCircle2, AlertTriangle, X, Film, FileImage, Settings2, Play, RefreshCw, Eye } from 'lucide-react';
+import { Sparkles, Download, CheckCircle2, AlertTriangle, X, Film, FileImage, Settings2, Play, RefreshCw, Eye, FolderArchive, Layers, Clock } from 'lucide-react';
+import { Project } from '../../types';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -9,9 +10,11 @@ interface ExportModalProps {
   exportedVideoUrl: string | null;
   onDownload: () => void;
   onStartExport?: (options: ExportOptions) => void;
+  onExportProject?: () => void;
   isExporting: boolean;
-  currentFormat?: 'mp4' | 'gif' | 'webm';
+  currentFormat?: 'mp4' | 'gif' | 'webm' | 'project';
   initialView?: 'settings' | 'preview';
+  project?: Project;
 }
 
 export const ExportModal: React.FC<ExportModalProps> = ({
@@ -21,17 +24,19 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   exportedVideoUrl,
   onDownload,
   onStartExport,
+  onExportProject,
   isExporting,
   currentFormat = 'mp4',
   initialView,
+  project,
 }) => {
-  const [selectedFormat, setSelectedFormat] = useState<'mp4' | 'gif' | 'webm'>(currentFormat);
-  const [selectedResolution, setSelectedResolution] = useState<'720p' | '1080p' | '4k'>('1080p');
+  const [selectedFormat, setSelectedFormat] = useState<'mp4' | 'gif' | 'webm' | 'project'>(currentFormat);
+  const [selectedResolution, setSelectedResolution] = useState<'source' | '720p' | '1080p' | '4k'>('source');
   const [selectedFps, setSelectedFps] = useState<number>(30);
   const [selectedQuality, setSelectedQuality] = useState<'medium' | 'high' | 'ultra'>('high');
   const [modalView, setModalView] = useState<'settings' | 'preview'>('settings');
 
-  const isDone = progress.percentage >= 100 && exportedVideoUrl !== null;
+  const isDone = progress.percentage >= 100 && (exportedVideoUrl !== null || selectedFormat === 'project');
   const isRendering = isExporting && !isDone;
 
   // Sync format changes from parent
@@ -49,7 +54,6 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       } else if (isExporting) {
         setModalView('preview');
       } else if (exportedVideoUrl) {
-        // If an export already exists, show settings or preview
         setModalView('settings');
       } else {
         setModalView('settings');
@@ -60,6 +64,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   if (!isOpen) return null;
 
   const handleStart = () => {
+    if (selectedFormat === 'project') {
+      if (onExportProject) {
+        onExportProject();
+      }
+      return;
+    }
+
     if (onStartExport) {
       setModalView('preview');
       onStartExport({
@@ -80,6 +91,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
               {selectedFormat === 'gif' ? (
                 <FileImage className="w-5 h-5 text-amber-400" />
+              ) : selectedFormat === 'project' ? (
+                <FolderArchive className="w-5 h-5 text-emerald-400" />
               ) : (
                 <Sparkles className="w-5 h-5 fill-sky-400/20" />
               )}
@@ -89,18 +102,22 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 {isRendering
                   ? selectedFormat === 'gif'
                     ? 'Exporting Animated GIF...'
+                    : selectedFormat === 'project'
+                    ? 'Packaging Editable Project...'
                     : 'Exporting Demo Video...'
                   : modalView === 'preview' && isDone
                   ? 'Export Complete!'
                   : exportedVideoUrl
                   ? 'Export Custom Settings'
-                  : 'Export & Download Video'}
+                  : 'Export & Download'}
               </h3>
               <p className="text-xs text-slate-400">
                 {isRendering
                   ? 'Rendering canvas frames, animations & audio'
                   : modalView === 'preview' && isDone
                   ? 'Ready to save to your local drive'
+                  : selectedFormat === 'project'
+                  ? 'Save full project file to edit or resume on any computer'
                   : exportedVideoUrl
                   ? 'Adjust settings and re-export without losing any edits'
                   : 'Choose format, resolution and quality settings'}
@@ -118,7 +135,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         </div>
 
         {/* View Switcher Tabs (Visible when previous export exists and not rendering) */}
-        {!isRendering && exportedVideoUrl && (
+        {!isRendering && exportedVideoUrl && selectedFormat !== 'project' && (
           <div className="flex rounded-xl bg-slate-950/80 p-1 border border-slate-800 text-xs font-semibold">
             <button
               type="button"
@@ -154,7 +171,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             {/* Format Selection Cards */}
             <div>
               <label className="text-xs font-semibold text-slate-300 block mb-2">Output Format</label>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-2.5">
                 <button
                   type="button"
                   onClick={() => setSelectedFormat('mp4')}
@@ -164,11 +181,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                       : 'bg-slate-800/60 border-slate-700/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                   }`}
                 >
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex items-center gap-1.5 mb-1">
                     <Film className="w-4 h-4 text-sky-400" />
-                    <span className="font-semibold text-xs text-slate-100">Video (MP4 / WebM)</span>
+                    <span className="font-semibold text-xs text-slate-100">Video</span>
                   </div>
-                  <p className="text-[11px] text-slate-400">Full HD with crystal-clear audio soundtrack</p>
+                  <p className="text-[10px] text-slate-400 line-clamp-2">MP4 / WebM with audio & zoom effects</p>
                 </button>
 
                 <button
@@ -183,107 +200,177 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                       : 'bg-slate-800/60 border-slate-700/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                   }`}
                 >
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex items-center gap-1.5 mb-1">
                     <FileImage className="w-4 h-4 text-amber-400" />
-                    <span className="font-semibold text-xs text-slate-100">Animated GIF</span>
+                    <span className="font-semibold text-xs text-slate-100">GIF</span>
                   </div>
-                  <p className="text-[11px] text-slate-400">Looping GIF for GitHub READMEs & docs</p>
+                  <p className="text-[10px] text-slate-400 line-clamp-2">Looping GIF for READMEs & docs</p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedFormat('project')}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    selectedFormat === 'project'
+                      ? 'bg-emerald-500/10 border-emerald-500 text-emerald-300 shadow-md shadow-emerald-500/10 ring-1 ring-emerald-500'
+                      : 'bg-slate-800/60 border-slate-700/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <FolderArchive className="w-4 h-4 text-emerald-400" />
+                    <span className="font-semibold text-xs text-slate-100">Project File</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 line-clamp-2">Editable .demoproj with full timeline</p>
                 </button>
               </div>
             </div>
 
-            {/* Resolution Settings */}
-            <div>
-              <label className="text-xs font-semibold text-slate-300 block mb-1.5">Resolution</label>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: '720p', label: '720p HD', desc: '1280 × 720' },
-                  { id: '1080p', label: '1080p FHD', desc: '1920 × 1080' },
-                  { id: '4k', label: '4K UHD', desc: '3840 × 2160' },
-                ].map((res) => (
-                  <button
-                    key={res.id}
-                    type="button"
-                    onClick={() => setSelectedResolution(res.id as '720p' | '1080p' | '4k')}
-                    className={`px-3 py-2 rounded-lg border text-center transition-all ${
-                      selectedResolution === res.id
-                        ? 'bg-sky-500/20 border-sky-500 text-sky-300'
-                        : 'bg-slate-800/50 border-slate-700/60 text-slate-400 hover:bg-slate-800'
-                    }`}
-                  >
-                    <div className="text-xs font-semibold text-slate-200">{res.label}</div>
-                    <div className="text-[10px] text-slate-500">{res.desc}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Frame Rate & Quality */}
-            <div className="grid grid-cols-2 gap-3 pt-1">
-              <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1.5">Frame Rate</label>
-                <div className="flex rounded-lg bg-slate-800/80 p-1 border border-slate-700/60">
-                  {(selectedFormat === 'gif' ? [15, 20, 24] : [24, 30, 60]).map((fps) => (
-                    <button
-                      key={fps}
-                      type="button"
-                      onClick={() => setSelectedFps(fps)}
-                      className={`flex-1 py-1 text-xs rounded font-medium transition-all ${
-                        selectedFps === fps
-                          ? 'bg-sky-500 text-white shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      {fps} FPS
-                    </button>
-                  ))}
+            {selectedFormat === 'project' ? (
+              /* Project Package Summary View */
+              <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-3">
+                <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
+                  <Layers className="w-4 h-4" />
+                  <span>Editable Project Package (.demoproj)</span>
                 </div>
-              </div>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Exports your current editing session into a standalone file. You can import this file anytime on any computer to continue trimming, adjusting zooms, or editing annotations.
+                </p>
 
-              <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1.5">Quality / Bitrate</label>
-                <div className="flex rounded-lg bg-slate-800/80 p-1 border border-slate-700/60">
-                  {[
-                    { id: 'medium', label: 'Medium' },
-                    { id: 'high', label: 'High' },
-                    { id: 'ultra', label: 'Ultra' },
-                  ].map((q) => (
-                    <button
-                      key={q.id}
-                      type="button"
-                      onClick={() => setSelectedQuality(q.id as 'medium' | 'high' | 'ultra')}
-                      className={`flex-1 py-1 text-xs rounded font-medium transition-all ${
-                        selectedQuality === q.id
-                          ? 'bg-sky-500 text-white shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      {q.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-2">
-              <button
-                type="button"
-                onClick={handleStart}
-                className="w-full py-3 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-xl shadow-sky-500/25 transition-all hover:scale-[1.01] active:scale-[0.99]"
-              >
-                {exportedVideoUrl ? (
-                  <>
-                    <RefreshCw className="w-4 h-4" />
-                    <span>Re-export with New Settings ({selectedFormat.toUpperCase()})</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4 fill-white" />
-                    <span>Start Export ({selectedFormat.toUpperCase()})</span>
-                  </>
+                {project && (
+                  <div className="grid grid-cols-2 gap-2 pt-1 text-[11px] text-slate-400">
+                    <div className="p-2 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between">
+                      <span>Timeline Duration:</span>
+                      <span className="text-slate-200 font-mono font-medium">{project.duration?.toFixed(1)}s</span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between">
+                      <span>Video Segments:</span>
+                      <span className="text-slate-200 font-mono font-medium">{project.videoSegments?.length || 1}</span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between">
+                      <span>Annotations:</span>
+                      <span className="text-slate-200 font-mono font-medium">{project.annotations?.length || 0}</span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between">
+                      <span>Zoom Events:</span>
+                      <span className="text-slate-200 font-mono font-medium">{project.zoomEvents?.length || 0}</span>
+                    </div>
+                  </div>
                 )}
-              </button>
-            </div>
+
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={handleStart}
+                    className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-xl shadow-emerald-500/25 transition-all hover:scale-[1.01] active:scale-[0.99]"
+                  >
+                    <Download className="w-4 h-4 stroke-[2.5]" />
+                    <span>Export Project File (.demoproj)</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Resolution Settings */}
+                <div>
+                  <label className="text-xs font-semibold text-slate-300 block mb-1.5">Resolution</label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {[
+                      {
+                        id: 'source',
+                        label: 'Original',
+                        desc: project?.settings?.width && project?.settings?.height
+                          ? `${project.settings.width} × ${project.settings.height}`
+                          : 'Native Record',
+                      },
+                      { id: '1080p', label: '1080p FHD', desc: '1920 × 1080' },
+                      { id: '720p', label: '720p HD', desc: '1280 × 720' },
+                      { id: '4k', label: '4K UHD', desc: '3840 × 2160' },
+                    ].map((res) => (
+                      <button
+                        key={res.id}
+                        type="button"
+                        onClick={() => setSelectedResolution(res.id as 'source' | '720p' | '1080p' | '4k')}
+                        className={`px-2.5 py-2 rounded-lg border text-center transition-all ${
+                          selectedResolution === res.id
+                            ? 'bg-sky-500/20 border-sky-500 text-sky-300'
+                            : 'bg-slate-800/50 border-slate-700/60 text-slate-400 hover:bg-slate-800'
+                        }`}
+                      >
+                        <div className="text-xs font-semibold text-slate-200">{res.label}</div>
+                        <div className="text-[10px] text-slate-500 truncate">{res.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Frame Rate & Quality */}
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1.5">Frame Rate</label>
+                    <div className="flex rounded-lg bg-slate-800/80 p-1 border border-slate-700/60">
+                      {(selectedFormat === 'gif' ? [15, 20, 24] : [24, 30, 60]).map((fps) => (
+                        <button
+                          key={fps}
+                          type="button"
+                          onClick={() => setSelectedFps(fps)}
+                          className={`flex-1 py-1 text-xs rounded font-medium transition-all ${
+                            selectedFps === fps
+                              ? 'bg-sky-500 text-white shadow-sm'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {fps} FPS
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1.5">Quality / Bitrate</label>
+                    <div className="flex rounded-lg bg-slate-800/80 p-1 border border-slate-700/60">
+                      {[
+                        { id: 'medium', label: 'Medium' },
+                        { id: 'high', label: 'High' },
+                        { id: 'ultra', label: 'Ultra' },
+                      ].map((q) => (
+                        <button
+                          key={q.id}
+                          type="button"
+                          onClick={() => setSelectedQuality(q.id as 'medium' | 'high' | 'ultra')}
+                          className={`flex-1 py-1 text-xs rounded font-medium transition-all ${
+                            selectedQuality === q.id
+                              ? 'bg-sky-500 text-white shadow-sm'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {q.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={handleStart}
+                    className="w-full py-3 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-xl shadow-sky-500/25 transition-all hover:scale-[1.01] active:scale-[0.99]"
+                  >
+                    {exportedVideoUrl ? (
+                      <>
+                        <RefreshCw className="w-4 h-4" />
+                        <span>Re-export with New Settings ({selectedFormat.toUpperCase()})</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-4 h-4 fill-white" />
+                        <span>Start Export ({selectedFormat.toUpperCase()})</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -304,7 +391,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             </div>
 
             <p className="text-[11px] text-slate-400 text-center">
-              Please leave this window open while your video frames, animations, and audio are compiled.
+              Please leave this window open while your export is being prepared.
             </p>
           </div>
         )}
@@ -320,13 +407,15 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             </div>
 
             {/* Preview Output */}
-            <div className="relative aspect-video rounded-xl bg-slate-950 border border-slate-800 overflow-hidden shadow-lg flex items-center justify-center">
-              {selectedFormat === 'gif' ? (
-                <img src={exportedVideoUrl} alt="Exported GIF" className="w-full h-full object-contain" />
-              ) : (
-                <video src={exportedVideoUrl} controls autoPlay className="w-full h-full object-contain" />
-              )}
-            </div>
+            {exportedVideoUrl && (
+              <div className="relative aspect-video rounded-xl bg-slate-950 border border-slate-800 overflow-hidden shadow-lg flex items-center justify-center">
+                {selectedFormat === 'gif' ? (
+                  <img src={exportedVideoUrl} alt="Exported GIF" className="w-full h-full object-contain" />
+                ) : (
+                  <video src={exportedVideoUrl} controls autoPlay className="w-full h-full object-contain" />
+                )}
+              </div>
+            )}
 
             <div className="space-y-2.5">
               <button
@@ -360,3 +449,4 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     </div>
   );
 };
+

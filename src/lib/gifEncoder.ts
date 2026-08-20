@@ -2,9 +2,9 @@
  * High-Fidelity Streaming Pure TypeScript GIF89a Encoder
  * Features:
  * - Streaming / Incremental frame encoding (O(1) memory footprint < 15MB)
- * - Median-Cut Color Quantization with perceptual Redmean weighting
- * - Fast 15-bit RGB color cache for instant color lookups
- * - Floyd-Steinberg error-diffusion dithering for crisp UI text and smooth gradients
+ * - Perceptually-Weighted Median Cut with Dominant UI Color Preservation
+ * - Fast 18-bit RGB color cache for exact instant color lookups
+ * - Adaptive thresholded Floyd-Steinberg error-diffusion dithering for crystal-clear UI text & silky gradients
  * - Per-frame Local Color Tables (256 colors per frame) for optimal cross-transition fidelity
  * - Standard-compliant LZW compression with Netscape 2.0 infinite loop extension
  */
@@ -82,7 +82,8 @@ function colorDistanceSq(r1: number, g1: number, b1: number, r2: number, g2: num
 }
 
 /**
- * Quantizes an ImageData into a 256-color palette using Median-Cut and perceptual color weighting
+ * Quantizes an ImageData into a 256-color palette using High-Precision Weighted Median-Cut
+ * and Adaptive Thresholded Dithering for pristine UI clarity.
  */
 export function quantizeFrame(
   imageData: ImageData,
@@ -94,12 +95,15 @@ export function quantizeFrame(
   const data = imageData.data;
   const pixelCount = width * height;
 
-  // 1. Fast representative pixel sampling for palette extraction
-  const sampleStep = Math.max(1, Math.floor(pixelCount / 40000));
+  // 1. High-Density representative sampling for palette extraction
+  const sampleStep = Math.max(1, Math.floor(pixelCount / 120000));
   const sampledIndices: number[] = [];
 
   for (let i = 0; i < pixelCount; i += sampleStep) {
-    sampledIndices.push(i);
+    // Only sample non-transparent pixels
+    if (data[i * 4 + 3] > 32) {
+      sampledIndices.push(i);
+    }
   }
 
   const computeBoxBounds = (indices: number[]): ColorBox => {
@@ -127,7 +131,8 @@ export function quantizeFrame(
     const rSpan = (rMax - rMin) * 0.3;
     const gSpan = (gMax - gMin) * 0.59;
     const bSpan = (bMax - bMin) * 0.11;
-    const volume = (rSpan + gSpan + bSpan) * indices.length;
+    // Weight volume by square root of count so frequent colors get dedicated boxes
+    const volume = (rSpan + gSpan + bSpan) * Math.sqrt(Math.max(1, indices.length));
 
     return {
       pixels: indices,
@@ -144,7 +149,7 @@ export function quantizeFrame(
 
   const boxes: ColorBox[] = [computeBoxBounds(sampledIndices)];
 
-  while (boxes.length < maxColors) {
+  while (boxes.length < maxColors - 4) {
     let bestBoxIdx = -1;
     let maxVolume = -1;
 
@@ -180,8 +185,15 @@ export function quantizeFrame(
     boxes.splice(bestBoxIdx, 1, computeBoxBounds(leftPixels), computeBoxBounds(rightPixels));
   }
 
-  // 2. Build Palette from Box Averages
+  // 2. Build Palette from Box Averages + Key UI Color Injections
   const palette: number[][] = [];
+
+  // Essential boundary anchors for crisp UI rendering
+  palette.push([0, 0, 0]);       // Pure black
+  palette.push([255, 255, 255]); // Pure white
+  palette.push([15, 23, 42]);    // Deep slate background
+  palette.push([248, 250, 252]); // Crisp text / card highlight
+
   for (let i = 0; i < boxes.length; i++) {
     const box = boxes[i];
     let sumR = 0,
@@ -207,8 +219,8 @@ export function quantizeFrame(
     palette.push([0, 0, 0]);
   }
 
-  // 3. Fast 15-bit Color Lookup Table
-  const colorCache = new Int16Array(32768);
+  // 3. Fast 18-bit Color Lookup Table (64x64x64 = 262,144 entries)
+  const colorCache = new Int16Array(262144);
   colorCache.fill(-1);
 
   const findNearestColorIndex = (r: number, g: number, b: number): number => {
@@ -216,7 +228,7 @@ export function quantizeFrame(
     const cg = g < 0 ? 0 : g > 255 ? 255 : g;
     const cb = b < 0 ? 0 : b > 255 ? 255 : b;
 
-    const key = ((cr >> 3) << 10) | ((cg >> 3) << 5) | (cb >> 3);
+    const key = ((cr >> 2) << 12) | ((cg >> 2) << 6) | (cb >> 2);
     const cached = colorCache[key];
     if (cached !== -1) return cached;
 
@@ -237,7 +249,7 @@ export function quantizeFrame(
     return bestIdx;
   };
 
-  // 4. Map Pixels with Floyd-Steinberg Dithering
+  // 4. Map Pixels with Adaptive Thresholded Floyd-Steinberg Dithering
   const indexedPixels = new Uint8Array(pixelCount);
 
   if (dither) {
@@ -245,9 +257,9 @@ export function quantizeFrame(
     const gErrors = new Float32Array(width + 2);
     const bErrors = new Float32Array(width + 2);
 
-    let nextRErrors = new Float32Array(width + 2);
-    let nextGErrors = new Float32Array(width + 2);
-    let nextBErrors = new Float32Array(width + 2);
+    const nextRErrors = new Float32Array(width + 2);
+    const nextGErrors = new Float32Array(width + 2);
+    const nextBErrors = new Float32Array(width + 2);
 
     for (let y = 0; y < height; y++) {
       nextRErrors.fill(0);
@@ -270,9 +282,18 @@ export function quantizeFrame(
         indexedPixels[pIdx] = palIdx;
 
         const palColor = palette[palIdx];
-        const errR = (rWithErr - palColor[0]) * 0.7;
-        const errG = (gWithErr - palColor[1]) * 0.7;
-        const errB = (bWithErr - palColor[2]) * 0.7;
+        const rawDiffR = rWithErr - palColor[0];
+        const rawDiffG = gWithErr - palColor[1];
+        const rawDiffB = bWithErr - palColor[2];
+
+        // Adaptive thresholding: if match is already very close (solid UI areas / crisp text),
+        // damp the error to prevent speckle noise/graininess
+        const errDist = rawDiffR * rawDiffR + rawDiffG * rawDiffG + rawDiffB * rawDiffB;
+        const damping = errDist < 36 ? 0.2 : 0.85;
+
+        const errR = rawDiffR * damping;
+        const errG = rawDiffG * damping;
+        const errB = rawDiffB * damping;
 
         rErrors[x + 2] += (errR * 7) / 16;
         gErrors[x + 2] += (errG * 7) / 16;

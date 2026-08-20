@@ -12,10 +12,11 @@ import { AiEditorPanel } from './AiEditorPanel';
 import { ExportModal } from './ExportModal';
 import { SlideTemplateModal } from './SlideTemplateModal';
 import { renderAndExportVideo, ExportProgress, ExportOptions } from '../../lib/videoExporter';
+import { downloadProjectFile } from '../../lib/projectPackage';
 import { saveProject } from '../../lib/db';
 import { generateAutoZooms, DEFAULT_AUTO_ZOOM_SETTINGS } from '../../lib/zoomSystem';
 import { FrameSlideStrip } from './FrameSlideStrip';
-import { Scissors, MousePointerClick, MessageSquare, Layers, Music, Save, Check, Undo2, Redo2, Sparkles, ZoomIn, Film, LayoutGrid, Zap, Video, Download, Sliders, ArrowRight, Play, Volume2, MousePointer } from 'lucide-react';
+import { Scissors, MousePointerClick, MessageSquare, Layers, Music, Save, Check, Undo2, Redo2, Sparkles, ZoomIn, Film, LayoutGrid, Zap, Video, Download, Sliders, ArrowRight, Play, Volume2, MousePointer, FolderArchive } from 'lucide-react';
 
 interface EditorViewProps {
   project: Project;
@@ -284,6 +285,28 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
     }
   };
 
+  // Export Project Package (.demoproj)
+  const handleExportProject = async () => {
+    setExportedFormat('project');
+    setIsExporting(true);
+    setIsExportModalOpen(true);
+    setExportedVideoUrl(null);
+    setExportedBlob(null);
+    setExportProgress({ percentage: 0, status: 'Preparing project package (.demoproj)...' });
+
+    try {
+      await downloadProjectFile(project, (percentage, status) => {
+        setExportProgress({ percentage, status });
+      });
+      setExportProgress({ percentage: 100, status: 'Project file (.demoproj) exported and downloaded successfully!' });
+      setIsExporting(false);
+    } catch (err: any) {
+      console.error('Project export failed:', err);
+      setExportProgress({ percentage: 0, status: 'Failed to export project: ' + (err.message || 'Unknown error') });
+      setIsExporting(false);
+    }
+  };
+
   const handleDownload = () => {
     if (!exportedVideoUrl) return;
     const a = document.createElement('a');
@@ -540,6 +563,21 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
                     </div>
                   </div>
                   <ArrowRight className="w-4 h-4 text-sky-200" />
+                </button>
+
+                {/* Export Editable Project (.demoproj) */}
+                <button
+                  onClick={handleExportProject}
+                  className="w-full p-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs flex items-center justify-between shadow-lg shadow-emerald-500/20 transition-all hover:scale-[1.01] active:scale-[0.99]"
+                >
+                  <div className="flex items-center gap-2 text-left">
+                    <FolderArchive className="w-4 h-4 shrink-0 text-emerald-100" />
+                    <div>
+                      <div className="leading-tight">Export Project Package (.demoproj)</div>
+                      <div className="text-[10px] text-emerald-200 font-normal">Saves recording, edits, tracks & annotations</div>
+                    </div>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-emerald-200" />
                 </button>
 
                 {/* Custom Settings button */}
@@ -1255,6 +1293,8 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
         exportedVideoUrl={exportedVideoUrl}
         onDownload={handleDownload}
         onStartExport={handleExport}
+        onExportProject={handleExportProject}
+        project={project}
         isExporting={isExporting}
         currentFormat={exportedFormat}
       />

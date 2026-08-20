@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Project, GraphicTemplate, SlideType, TransitionCard } from './types';
 import { getAllProjects, saveProject, deleteProject, duplicateProject } from './lib/db';
 import { createSampleDemoProject } from './lib/demoVideoGenerator';
+import { importProjectPackage } from './lib/projectPackage';
 import { Header } from './components/Header';
 import { HomeScreen } from './components/HomeScreen';
 import { RecorderModal } from './components/RecorderModal';
@@ -93,6 +94,24 @@ export default function App() {
       console.error('Failed to create sample demo project:', e);
     } finally {
       setIsGeneratingSample(false);
+    }
+  };
+
+  // Import Editable Project (.demoproj or .json)
+  const handleImportProject = async (file: File) => {
+    // If user selected a standard video file, route to video importer
+    if (file.type.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi)$/i.test(file.name)) {
+      return handleImportVideo(file);
+    }
+
+    try {
+      const restored = await importProjectPackage(file);
+      setProjects((prev) => [restored, ...prev.filter((p) => p.id !== restored.id)]);
+      setSelectedProjectId(restored.id);
+      await loadProjects();
+    } catch (err: any) {
+      console.error('Project import error:', err);
+      alert(err.message || 'Failed to import project package. Please check file format.');
     }
   };
 
@@ -194,6 +213,7 @@ export default function App() {
             onSelectProject={(id) => setSelectedProjectId(id)}
             onNewRecording={() => setIsRecorderOpen(true)}
             onImportVideo={handleImportVideo}
+            onImportProject={handleImportProject}
             onCreateSampleProject={handleCreateSampleProject}
             onDuplicateProject={handleDuplicate}
             onDeleteProject={handleDelete}
@@ -221,4 +241,5 @@ export default function App() {
     </div>
   );
 }
+
 

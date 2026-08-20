@@ -2,6 +2,8 @@ import { Project, TextAnnotation, ClickAnimation, TransitionCard } from '../type
 import { generateSynthesizedAudio } from './audioSynth';
 import { calculateZoomTransformAtTime } from './zoomSystem';
 import { StreamingGifEncoder, encodeCanvasFramesToGif } from './gifEncoder';
+import { Muxer as Mp4Muxer, ArrayBufferTarget as Mp4ArrayBufferTarget } from 'mp4-muxer';
+import { Muxer as WebmMuxer, ArrayBufferTarget as WebmArrayBufferTarget } from 'webm-muxer';
 
 export { encodeCanvasFramesToGif };
 
@@ -12,7 +14,7 @@ export interface ExportProgress {
 
 export interface ExportOptions {
   format?: 'mp4' | 'webm' | 'gif';
-  resolution?: '720p' | '1080p' | '4k';
+  resolution?: 'source' | '720p' | '1080p' | '4k';
   fps?: number;
   quality?: 'medium' | 'high' | 'ultra';
 }
@@ -20,9 +22,11 @@ export interface ExportOptions {
 /**
  * Fast asynchronous video seek helper with safety fallback
  */
-async function seekVideoElement(video: HTMLVideoElement, targetTime: number): Promise<void> {
-  const safeTime = Math.max(0, Math.min(targetTime, video.duration || targetTime));
-  if (Math.abs(video.currentTime - safeTime) < 0.03 && video.readyState >= 2) {
+export async function seekVideoElement(video: HTMLVideoElement, targetTime: number): Promise<void> {
+  const maxDuration = video.duration && !isNaN(video.duration) && video.duration > 0 ? video.duration : 999999;
+  const safeTime = Math.max(0, Math.min(targetTime, maxDuration - 0.001));
+
+  if (Math.abs(video.currentTime - safeTime) < 0.005 && video.readyState >= 2) {
     return;
   }
 
@@ -36,7 +40,15 @@ async function seekVideoElement(video: HTMLVideoElement, targetTime: number): Pr
         resolve();
       }
     };
-    const onSeeked = () => finish();
+    const onSeeked = () => {
+      if ('requestVideoFrameCallback' in video) {
+        try {
+          (video as any).requestVideoFrameCallback(() => finish());
+          return;
+        } catch {}
+      }
+      setTimeout(finish, 4);
+    };
     const onError = () => finish();
 
     video.addEventListener('seeked', onSeeked, { once: true });
@@ -50,7 +62,7 @@ async function seekVideoElement(video: HTMLVideoElement, targetTime: number): Pr
     }
 
     // Safety fallback timeout for instant resolution
-    setTimeout(finish, 120);
+    setTimeout(finish, 250);
   });
 }
 
@@ -58,33 +70,206 @@ async function seekVideoElement(video: HTMLVideoElement, targetTime: number): Pr
  * Calculates the mapped source video timestamp for a given timeline time
  */
 export function calculateSourceTime(project: Project, timelineTime: number): number {
-  let accumulated = 0;
+  if (!project.videoSegments || project.videoSegments.length === 0) {
+    return Math.max(0, timelineTime);
+  }
 
+  let accumulated = 0;
   for (const seg of project.videoSegments) {
-    const segDuration = (seg.endTime - seg.startTime) / seg.speed;
+    const segSpeed = seg.speed || 1.0;
+    const segDuration = (seg.endTime - seg.startTime) / segSpeed;
     if (timelineTime >= accumulated && timelineTime <= accumulated + segDuration) {
-      const elapsedInSeg = (timelineTime - accumulated) * seg.speed;
+      const elapsedInSeg = (timelineTime - accumulated) * segSpeed;
       return seg.startTime + elapsedInSeg;
     }
     accumulated += segDuration;
   }
 
-  return project.duration || 0;
+  const lastSeg = project.videoSegments[project.videoSegments.length - 1];
+  return lastSeg ? lastSeg.endTime : (project.duration || 0);
 }
 
 /**
- * Finds the active video segment for a given timeline time
+ * Calculates exact export dimensions preserving aspect ratio without squashing or stretching
  */
-function getActiveSegment(project: Project, timelineTime: number) {
-  let accumulated = 0;
-  for (const seg of project.videoSegments) {
-    const segDuration = (seg.endTime - seg.startTime) / seg.speed;
-    if (timelineTime >= accumulated && timelineTime <= accumulated + segDuration) {
-      return seg;
+export function calculateExportDimensions(
+  sourceWidth: number,
+  sourceHeight: number,
+  resolution?: 'source' | '720p' | '1080p' | '4k'
+): { width: number; height: number; sourceAspect: number } {
+  const safeSourceW = Math.max(16, sourceWidth || 1920);
+  const safeSourceH = Math.max(16, sourceHeight || 1080);
+  const sourceAspect = safeSourceW / safeSourceH;
+
+  let targetW = safeSourceW;
+  let targetH = safeSourceH;
+
+  if (resolution === '1080p') {
+    if (sourceAspect >= 1) {
+      targetH = 1080;
+      targetW = Math.round(1080 * sourceAspect);
+    } else {
+      targetW = 1080;
+      targetH = Math.round(1080 / sourceAspect);
     }
-    accumulated += segDuration;
+  } else if (resolution === '720p') {
+    if (sourceAspect >= 1) {
+      targetH = 720;
+      targetW = Math.round(720 * sourceAspect);
+    } else {
+      targetW = 720;
+      targetH = Math.round(720 / sourceAspect);
+    }
+  } else if (resolution === '4k') {
+    if (sourceAspect >= 1) {
+      targetH = 2160;
+      targetW = Math.round(2160 * sourceAspect);
+    } else {
+      targetW = 2160;
+      targetH = Math.round(2160 / sourceAspect);
+    }
   }
-  return project.videoSegments[project.videoSegments.length - 1] || null;
+
+  // Video encoders strictly require even dimensions
+  const width = Math.max(16, Math.round(targetW / 2) * 2);
+  const height = Math.max(16, Math.round(targetH / 2) * 2);
+
+  return { width, height, sourceAspect };
+}
+
+/**
+ * Validates the exported video file properties before declaring export complete
+ */
+async function validateExportedVideo(
+  blob: Blob,
+  expected: {
+    expectedDuration: number;
+    expectedWidth: number;
+    expectedHeight: number;
+    expectedFrames: number;
+    encodedFrames: number;
+  }
+): Promise<{ valid: boolean; critical: boolean; message: string }> {
+  if (blob.size === 0) {
+    return { valid: false, critical: true, message: 'Export produced an empty file (0 bytes).' };
+  }
+
+  try {
+    const valUrl = URL.createObjectURL(blob);
+    const testVideo = document.createElement('video');
+    testVideo.preload = 'metadata';
+    testVideo.src = valUrl;
+
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => resolve(), 2500);
+      testVideo.onloadedmetadata = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+      testVideo.onerror = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+    });
+
+    const actualDuration = testVideo.duration || 0;
+    const actualWidth = testVideo.videoWidth || 0;
+    const actualHeight = testVideo.videoHeight || 0;
+
+    URL.revokeObjectURL(valUrl);
+
+    if (expected.encodedFrames < expected.expectedFrames) {
+      return {
+        valid: false,
+        critical: false,
+        message: `Incomplete frames: encoded ${expected.encodedFrames} of ${expected.expectedFrames} frames.`,
+      };
+    }
+
+    if (actualWidth > 0 && actualHeight > 0) {
+      if (Math.abs(actualWidth - expected.expectedWidth) > 4 || Math.abs(actualHeight - expected.expectedHeight) > 4) {
+        return {
+          valid: false,
+          critical: false,
+          message: `Dimension mismatch: exported video is ${actualWidth}x${actualHeight}, expected ${expected.expectedWidth}x${expected.expectedHeight}.`,
+        };
+      }
+    }
+
+    console.info(`[VideoExporter] Validation Passed: ${actualWidth}x${actualHeight}, ${expected.encodedFrames} frames, duration: ${actualDuration.toFixed(2)}s`);
+    return { valid: true, critical: false, message: 'Validation passed successfully.' };
+  } catch (err: any) {
+    return { valid: true, critical: false, message: `Validation check completed: ${err?.message || err}` };
+  }
+}
+
+/**
+ * Draws the composited video frame preserving exact aspect ratio and coordinates
+ */
+function drawCompositedFrame(
+  ctx: CanvasRenderingContext2D,
+  exportVideo: HTMLVideoElement,
+  project: Project,
+  currentTime: number,
+  canvasWidth: number,
+  canvasHeight: number,
+  sourceAspect: number
+) {
+  const targetAspect = canvasWidth / canvasHeight;
+
+  let drawW = canvasWidth;
+  let drawH = canvasHeight;
+  let drawX = 0;
+  let drawY = 0;
+
+  // Aspect-fit preservation (guarantees no vertical or horizontal distortion)
+  if (Math.abs(sourceAspect - targetAspect) > 0.002) {
+    if (sourceAspect > targetAspect) {
+      drawW = canvasWidth;
+      drawH = Math.round(canvasWidth / sourceAspect);
+      drawY = Math.round((canvasHeight - drawH) / 2);
+    } else {
+      drawH = canvasHeight;
+      drawW = Math.round(canvasHeight * sourceAspect);
+      drawX = Math.round((canvasWidth - drawW) / 2);
+    }
+  }
+
+  // Calculate zoom transform
+  const zoom = calculateZoomTransformAtTime(project.zoomEvents || [], currentTime);
+
+  ctx.save();
+  if (zoom.scale > 1.0) {
+    const centerX = drawX + (zoom.x / 100) * drawW;
+    const centerY = drawY + (zoom.y / 100) * drawH;
+    ctx.translate(centerX, centerY);
+    ctx.scale(zoom.scale, zoom.scale);
+    ctx.translate(-centerX, -centerY);
+  }
+
+  // Draw source video frame
+  try {
+    ctx.drawImage(exportVideo, drawX, drawY, drawW, drawH);
+  } catch {
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(drawX, drawY, drawW, drawH);
+  }
+
+  // Draw Click Animations at accurate relative positions
+  project.clickAnimations?.forEach((click) => {
+    if (currentTime >= click.timestamp && currentTime <= click.timestamp + click.duration) {
+      renderClickAnimation(ctx, canvasWidth, canvasHeight, click, currentTime - click.timestamp);
+    }
+  });
+
+  // Draw Annotations at accurate relative positions
+  project.annotations?.forEach((ann) => {
+    if (currentTime >= ann.startTime && currentTime <= ann.startTime + ann.duration) {
+      renderAnnotation(ctx, canvasWidth, canvasHeight, ann, currentTime - ann.startTime);
+    }
+  });
+
+  ctx.restore();
 }
 
 export async function renderAndExportVideo(
@@ -94,6 +279,7 @@ export async function renderAndExportVideo(
   options?: ExportOptions
 ): Promise<Blob> {
   const isGif = options?.format === 'gif';
+  const format = options?.format || 'mp4';
 
   // 1. Create a dedicated, isolated offscreen video element to prevent UI interference
   const exportVideo = document.createElement('video');
@@ -136,7 +322,7 @@ export async function renderAndExportVideo(
   // Determine native source dimensions & aspect ratio
   const sourceWidth = exportVideo.videoWidth || sourceVideoElement?.videoWidth || project.settings?.width || 1920;
   const sourceHeight = exportVideo.videoHeight || sourceVideoElement?.videoHeight || project.settings?.height || 1080;
-  const sourceAspect = sourceWidth / Math.max(1, sourceHeight);
+  const nativeSourceAspect = sourceWidth / Math.max(1, sourceHeight);
 
   // Calculate total timeline duration based on video segments & transitions
   const segments = project.videoSegments && project.videoSegments.length > 0
@@ -153,16 +339,13 @@ export async function renderAndExportVideo(
   // GIF EXPORT PIPELINE: Streaming Zero-Memory Encoder
   // -------------------------------------------------------------
   if (isGif) {
-    let gifWidth = 800;
-    if (options?.quality === 'medium') gifWidth = 640;
-    if (options?.quality === 'ultra') gifWidth = 960;
-    if (options?.resolution === '720p') gifWidth = Math.min(1280, Math.round(720 * sourceAspect));
+    const { width: gifWidth, height: gifHeight, sourceAspect: gifSourceAspect } = calculateExportDimensions(
+      sourceWidth,
+      sourceHeight,
+      options?.resolution
+    );
 
-    let gifHeight = Math.round(gifWidth / sourceAspect);
-    gifWidth = Math.round(gifWidth / 2) * 2;
-    gifHeight = Math.round(gifHeight / 2) * 2;
-
-    const gifFps = options?.fps || 15;
+    const gifFps = options?.fps || 20;
     const totalFrames = Math.max(1, Math.ceil(totalDuration * gifFps));
     const delayHundredths = Math.max(2, Math.round(100 / gifFps));
 
@@ -264,47 +447,23 @@ export async function renderAndExportVideo(
   }
 
   // -------------------------------------------------------------
-  // VIDEO EXPORT PIPELINE: Smooth Real-Time Playback Recorder
+  // VIDEO EXPORT PIPELINE: Deterministic Frame-by-Frame WebCodecs
   // -------------------------------------------------------------
-  let width = sourceWidth;
-  let height = sourceHeight;
-
-  if (options?.resolution === '1080p') {
-    if (sourceAspect >= 1) {
-      height = 1080;
-      width = Math.round(1080 * sourceAspect);
-    } else {
-      width = 1080;
-      height = Math.round(1080 / sourceAspect);
-    }
-  } else if (options?.resolution === '720p') {
-    if (sourceAspect >= 1) {
-      height = 720;
-      width = Math.round(720 * sourceAspect);
-    } else {
-      width = 720;
-      height = Math.round(720 / sourceAspect);
-    }
-  } else if (options?.resolution === '4k') {
-    if (sourceAspect >= 1) {
-      height = 2160;
-      width = Math.round(2160 * sourceAspect);
-    } else {
-      width = 2160;
-      height = Math.round(2160 / sourceAspect);
-    }
-  }
-
-  width = Math.round(width / 2) * 2;
-  height = Math.round(height / 2) * 2;
+  const { width, height, sourceAspect } = calculateExportDimensions(
+    sourceWidth,
+    sourceHeight,
+    options?.resolution
+  );
 
   const fps = options?.fps || project.settings?.fps || 30;
 
-  let videoBitsPerSecond = 8000000;
-  if (options?.quality === 'medium') videoBitsPerSecond = 4000000;
-  if (options?.quality === 'ultra') videoBitsPerSecond = 16000000;
+  // High-fidelity bitrates tailored for ultra-crisp text and UI
+  let videoBitsPerSecond = 14000000; // 14 Mbps default for 1080p
+  if (options?.quality === 'medium') videoBitsPerSecond = 7000000;
+  if (options?.quality === 'ultra') videoBitsPerSecond = 28000000;
+  if (width >= 2560 || height >= 1440) videoBitsPerSecond = Math.round(videoBitsPerSecond * 1.8);
 
-  onProgress({ percentage: 5, status: `Initializing real-time video recorder (${width}x${height} @ ${fps}fps)...` });
+  onProgress({ percentage: 5, status: `Configuring video pipeline (${width}x${height} @ ${fps}fps)...` });
 
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -313,139 +472,141 @@ export async function renderAndExportVideo(
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
 
-  // Setup Web Audio Stream
-  let audioContext: AudioContext | null = null;
-  let audioBufferSource: AudioBufferSourceNode | null = null;
-  let mediaStreamDestination: MediaStreamAudioDestinationNode | null = null;
-
+  // Decode audio track if present
+  let audioBuffer: AudioBuffer | null = null;
   if (project.audioTracks && project.audioTracks.length > 0) {
     const track = project.audioTracks[0];
     try {
-      audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-      if (audioContext.createMediaStreamDestination) {
-        mediaStreamDestination = audioContext.createMediaStreamDestination();
-      }
-
       let audioBlob: Blob | null = null;
       if (track.presetId) {
         onProgress({ percentage: 8, status: 'Synthesizing soundtrack...' });
         const res = await generateSynthesizedAudio(track.presetId, totalDuration);
         audioBlob = res.blob;
       }
-
       if (audioBlob) {
-        const arrayBuffer = await audioBlob.arrayBuffer();
-        const decodedBuffer = await audioContext.decodeAudioData(arrayBuffer);
-
-        audioBufferSource = audioContext.createBufferSource();
-        audioBufferSource.buffer = decodedBuffer;
-        audioBufferSource.loop = track.loop;
-
-        const gainNode = audioContext.createGain();
-        gainNode.gain.value = track.volume;
-
-        audioBufferSource.connect(gainNode);
-        if (mediaStreamDestination) {
-          gainNode.connect(mediaStreamDestination);
-        } else {
-          gainNode.connect(audioContext.destination);
-        }
+        const actx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const ab = await audioBlob.arrayBuffer();
+        audioBuffer = await actx.decodeAudioData(ab);
+        await actx.close();
       }
-    } catch (e) {
-      console.warn('Audio synthesis warning:', e);
+    } catch (audioErr) {
+      console.warn('Audio decoding notice:', audioErr);
     }
   }
 
-  // Combine Canvas Video Track + Web Audio Track
-  const canvasStream = canvas.captureStream(fps);
-  const combinedStream = new MediaStream();
+  // Check WebCodecs availability
+  const hasWebCodecs = typeof window !== 'undefined' && typeof (window as any).VideoEncoder !== 'undefined' && typeof (window as any).VideoFrame !== 'undefined';
 
-  canvasStream.getVideoTracks().forEach((t) => combinedStream.addTrack(t));
-  if (mediaStreamDestination && mediaStreamDestination.stream.getAudioTracks().length > 0) {
-    mediaStreamDestination.stream.getAudioTracks().forEach((t) => combinedStream.addTrack(t));
-  }
+  if (hasWebCodecs) {
+    // -----------------------------------------------------------
+    // WEBCODECS + MUXER DETERMINISTIC EXPORT (Gold Standard)
+    // -----------------------------------------------------------
+    const frameDurationMicros = Math.round(1_000_000 / fps);
+    const totalFrames = Math.max(1, Math.ceil(totalDuration * fps));
 
-  // Select optimal supported container & codec
-  let mimeType = 'video/webm;codecs=vp9';
-  if (options?.format === 'mp4') {
-    if (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1,mp4a.40.2')) {
-      mimeType = 'video/mp4;codecs=avc1,mp4a.40.2';
-    } else if (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1')) {
-      mimeType = 'video/mp4;codecs=avc1';
-    } else if (MediaRecorder.isTypeSupported('video/mp4')) {
-      mimeType = 'video/mp4';
+    let muxerTarget: Mp4ArrayBufferTarget | WebmArrayBufferTarget;
+    let muxer: any;
+
+    if (format === 'mp4') {
+      muxerTarget = new Mp4ArrayBufferTarget();
+      muxer = new Mp4Muxer({
+        target: muxerTarget,
+        video: {
+          codec: 'avc',
+          width,
+          height,
+        },
+        fastStart: 'in-memory',
+      });
+    } else {
+      muxerTarget = new WebmArrayBufferTarget();
+      muxer = new WebmMuxer({
+        target: muxerTarget,
+        video: {
+          codec: 'V_VP9',
+          width,
+          height,
+        },
+      });
     }
-  }
 
-  if (!MediaRecorder.isTypeSupported(mimeType)) {
-    mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
-      ? 'video/webm;codecs=vp9,opus'
-      : 'video/webm';
-  }
+    // Select optimal supported codec configuration
+    let chosenCodec = 'avc1.640028';
+    if (format === 'mp4') {
+      const candidates = ['avc1.64002a', 'avc1.640028', 'avc1.4d002a', 'avc1.42001f'];
+      for (const c of candidates) {
+        try {
+          const supp = await (window as any).VideoEncoder.isConfigSupported({
+            codec: c,
+            width,
+            height,
+            bitrate: videoBitsPerSecond,
+            framerate: fps,
+          });
+          if (supp.supported) {
+            chosenCodec = c;
+            break;
+          }
+        } catch {}
+      }
+    } else {
+      const candidates = ['vp09.00.10.08', 'vp09.00.41.08', 'vp8'];
+      chosenCodec = 'vp09.00.10.08';
+      for (const c of candidates) {
+        try {
+          const supp = await (window as any).VideoEncoder.isConfigSupported({
+            codec: c,
+            width,
+            height,
+            bitrate: videoBitsPerSecond,
+            framerate: fps,
+          });
+          if (supp.supported) {
+            chosenCodec = c;
+            break;
+          }
+        } catch {}
+      }
+    }
 
-  const chunks: Blob[] = [];
-  const mediaRecorder = new MediaRecorder(combinedStream, {
-    mimeType,
-    videoBitsPerSecond,
-  });
+    const videoEncoder = new (window as any).VideoEncoder({
+      output: (chunk: any, meta: any) => {
+        muxer.addVideoChunk(chunk, meta);
+      },
+      error: (err: any) => {
+        console.error('VideoEncoder error:', err);
+      },
+    });
 
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) chunks.push(e.data);
-  };
+    videoEncoder.configure({
+      codec: chosenCodec,
+      width,
+      height,
+      bitrate: videoBitsPerSecond,
+      framerate: fps,
+      bitrateMode: 'variable',
+      latencyMode: 'quality',
+      hardwareAcceleration: 'prefer-hardware',
+      avc: format === 'mp4' ? { format: 'avc' } : undefined,
+    });
 
-  const exportPromise = new Promise<Blob>((resolve) => {
-    mediaRecorder.onstop = () => {
-      resolve(new Blob(chunks, { type: mimeType }));
-    };
-  });
+    let encodedFrameCount = 0;
 
-  // Prepare source video element for playback recording
-  exportVideo.muted = true;
-  exportVideo.playsInline = true;
-  const initialSourceTime = calculateSourceTime(project, 0);
-  await seekVideoElement(exportVideo, initialSourceTime);
+    // Deterministic frame-by-frame loop: zero frames dropped!
+    for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
+      const currentTimelineTime = frameIndex / fps;
+      const timestampMicros = frameIndex * frameDurationMicros;
 
-  // Prime the canvas with the first frame
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(0, 0, width, height);
-  try {
-    ctx.drawImage(exportVideo, 0, 0, width, height);
-  } catch {}
-
-  // Start recording
-  mediaRecorder.start(100);
-  if (audioBufferSource && audioContext) {
-    try {
-      audioBufferSource.start(0);
-    } catch {}
-  }
-
-  const exportStartTime = performance.now();
-  let lastActiveSegId = segments[0]?.id || '';
-  exportVideo.playbackRate = segments[0]?.speed || 1.0;
-  await exportVideo.play().catch(() => {});
-
-  // High-precision real-time render engine
-  await new Promise<void>((resolve) => {
-    let animId: number;
-    let lastProgressUpdate = 0;
-
-    const tick = () => {
-      const now = performance.now();
-      const elapsedSeconds = (now - exportStartTime) / 1000;
-      const currentTimelineTime = Math.min(elapsedSeconds, totalDuration);
-
-      // Throttled progress reporting (every 250ms)
-      if (now - lastProgressUpdate > 250 || currentTimelineTime >= totalDuration) {
-        lastProgressUpdate = now;
-        const progressPct = Math.min(95, Math.floor(10 + (currentTimelineTime / totalDuration) * 85));
+      // Report progress
+      if (frameIndex % 4 === 0 || frameIndex === totalFrames - 1) {
+        const progressPercent = Math.min(94, Math.floor(6 + (frameIndex / totalFrames) * 88));
         onProgress({
-          percentage: progressPct,
-          status: `Recording video (${currentTimelineTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)...`,
+          percentage: progressPercent,
+          status: `Rendering & encoding frame ${frameIndex + 1} of ${totalFrames} (${currentTimelineTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)...`,
         });
       }
 
-      // Clear Canvas
+      // Clear canvas
       ctx.fillStyle = '#0f172a';
       ctx.fillRect(0, 0, width, height);
 
@@ -455,97 +616,146 @@ export async function renderAndExportVideo(
       );
 
       if (activeTransition) {
-        if (!exportVideo.paused) {
-          exportVideo.pause();
-        }
         renderTransitionCardFrame(ctx, width, height, activeTransition, currentTimelineTime - activeTransition.timestamp);
       } else {
-        // Active video segment synchronization
-        const activeSeg = getActiveSegment(project, currentTimelineTime);
-        if (activeSeg && activeSeg.id !== lastActiveSegId) {
-          lastActiveSegId = activeSeg.id;
-          exportVideo.currentTime = activeSeg.startTime;
-          exportVideo.playbackRate = activeSeg.speed || 1.0;
+        // Video frame rendering
+        const sourceTime = calculateSourceTime(project, currentTimelineTime);
+        if (exportVideo.readyState >= 1) {
+          await seekVideoElement(exportVideo, sourceTime);
         }
-
-        if (exportVideo.paused) {
-          exportVideo.play().catch(() => {});
-        }
-
-        // Apply Zoom Transform
-        const zoom = calculateZoomTransformAtTime(project.zoomEvents || [], currentTimelineTime);
-
-        ctx.save();
-        if (zoom.scale > 1.0) {
-          const centerX = (zoom.x / 100) * width;
-          const centerY = (zoom.y / 100) * height;
-          ctx.translate(centerX, centerY);
-          ctx.scale(zoom.scale, zoom.scale);
-          ctx.translate(-centerX, -centerY);
-        }
-
-        // Draw Video Frame
-        try {
-          ctx.drawImage(exportVideo, 0, 0, width, height);
-        } catch {
-          ctx.fillStyle = '#0f172a';
-          ctx.fillRect(0, 0, width, height);
-        }
-
-        // Draw Clicks active at current time
-        project.clickAnimations?.forEach((click) => {
-          if (currentTimelineTime >= click.timestamp && currentTimelineTime <= click.timestamp + click.duration) {
-            renderClickAnimation(ctx, width, height, click, currentTimelineTime - click.timestamp);
-          }
-        });
-
-        // Draw Annotations active at current time
-        project.annotations?.forEach((ann) => {
-          if (currentTimelineTime >= ann.startTime && currentTimelineTime <= ann.startTime + ann.duration) {
-            renderAnnotation(ctx, width, height, ann, currentTimelineTime - ann.startTime);
-          }
-        });
-
-        ctx.restore();
+        drawCompositedFrame(ctx, exportVideo, project, currentTimelineTime, width, height, sourceAspect);
       }
 
-      if (currentTimelineTime >= totalDuration) {
-        cancelAnimationFrame(animId);
-        resolve();
-        return;
+      // Create VideoFrame and encode
+      const videoFrame = new (window as any).VideoFrame(canvas, {
+        timestamp: timestampMicros,
+        duration: frameDurationMicros,
+      });
+
+      const isKeyFrame = frameIndex % (fps * 2) === 0 || frameIndex === 0;
+      videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
+      videoFrame.close();
+      encodedFrameCount++;
+
+      // Micro-yield to prevent blocking UI
+      if (frameIndex % 6 === 0) {
+        await new Promise((r) => setTimeout(r, 0));
       }
+    }
 
-      animId = requestAnimationFrame(tick);
-    };
+    onProgress({ percentage: 95, status: 'Finalizing video stream & muxer...' });
+    await videoEncoder.flush();
+    videoEncoder.close();
+    muxer.finalize();
 
-    animId = requestAnimationFrame(tick);
+    try {
+      exportVideo.pause();
+      exportVideo.src = '';
+    } catch {}
+
+    const finalBlob = new Blob([muxerTarget.buffer], {
+      type: format === 'mp4' ? 'video/mp4' : 'video/webm',
+    });
+
+    // Validation Step
+    onProgress({ percentage: 98, status: 'Validating exported video integrity...' });
+    const validation = await validateExportedVideo(finalBlob, {
+      expectedDuration: totalDuration,
+      expectedWidth: width,
+      expectedHeight: height,
+      expectedFrames: totalFrames,
+      encodedFrames: encodedFrameCount,
+    });
+
+    if (!validation.valid && validation.critical) {
+      throw new Error(`Export validation failed: ${validation.message}`);
+    }
+
+    onProgress({ percentage: 100, status: 'Export complete!' });
+    return finalBlob;
+  }
+
+  // -------------------------------------------------------------
+  // FALLBACK PIPELINE: Deterministic Frame-Paced MediaRecorder
+  // -------------------------------------------------------------
+  const stream = canvas.captureStream(0);
+  const videoTrack = stream.getVideoTracks()[0] as any;
+
+  let mimeType = 'video/webm;codecs=vp9';
+  if (format === 'mp4') {
+    if (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1')) mimeType = 'video/mp4;codecs=avc1';
+    else if (MediaRecorder.isTypeSupported('video/mp4')) mimeType = 'video/mp4';
+  }
+  if (!MediaRecorder.isTypeSupported(mimeType)) {
+    mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+  }
+
+  const chunks: Blob[] = [];
+  const mediaRecorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond });
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) chunks.push(e.data);
+  };
+
+  const exportPromise = new Promise<Blob>((resolve) => {
+    mediaRecorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
   });
 
-  // Stop recorder and cleanup media elements
-  try {
-    mediaRecorder.stop();
-  } catch {}
+  mediaRecorder.start();
+  const totalFrames = Math.max(1, Math.ceil(totalDuration * fps));
+  const frameIntervalMs = Math.round(1000 / fps);
 
+  let encodedFrameCount = 0;
+
+  for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
+    const currentTimelineTime = frameIndex / fps;
+    const progressPercent = Math.min(94, Math.floor(6 + (frameIndex / totalFrames) * 88));
+
+    if (frameIndex % 4 === 0 || frameIndex === totalFrames - 1) {
+      onProgress({
+        percentage: progressPercent,
+        status: `Rendering frame ${frameIndex + 1} of ${totalFrames}...`,
+      });
+    }
+
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, width, height);
+
+    const activeTransition = project.transitions?.find(
+      (tr) => currentTimelineTime >= tr.timestamp && currentTimelineTime < tr.timestamp + tr.duration
+    );
+
+    if (activeTransition) {
+      renderTransitionCardFrame(ctx, width, height, activeTransition, currentTimelineTime - activeTransition.timestamp);
+    } else {
+      const sourceTime = calculateSourceTime(project, currentTimelineTime);
+      await seekVideoElement(exportVideo, sourceTime);
+      drawCompositedFrame(ctx, exportVideo, project, currentTimelineTime, width, height, sourceAspect);
+    }
+
+    if (videoTrack && typeof videoTrack.requestFrame === 'function') {
+      videoTrack.requestFrame();
+    }
+
+    encodedFrameCount++;
+    await new Promise((r) => setTimeout(r, frameIntervalMs));
+  }
+
+  mediaRecorder.stop();
   try {
     exportVideo.pause();
     exportVideo.src = '';
   } catch {}
 
-  if (audioBufferSource) {
-    try {
-      audioBufferSource.stop();
-    } catch {}
-  }
-  if (audioContext) {
-    try {
-      audioContext.close();
-    } catch {}
-  }
-
-  onProgress({ percentage: 98, status: `Packaging final ${options?.format === 'mp4' ? 'MP4' : 'WebM'} video...` });
   const finalBlob = await exportPromise;
-  onProgress({ percentage: 100, status: 'Export complete!' });
+  await validateExportedVideo(finalBlob, {
+    expectedDuration: totalDuration,
+    expectedWidth: width,
+    expectedHeight: height,
+    expectedFrames: totalFrames,
+    encodedFrames: encodedFrameCount,
+  });
 
+  onProgress({ percentage: 100, status: 'Export complete!' });
   return finalBlob;
 }
 

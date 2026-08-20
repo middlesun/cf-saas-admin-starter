@@ -1,12 +1,14 @@
 import React, { useRef, useState } from 'react';
 import { Project } from '../types';
-import { Video, Plus, Upload, Play, Copy, Trash2, Clock, Sparkles, Wand2, Shield, ArrowRight, Download, CheckSquare, Square } from 'lucide-react';
+import { Video, Plus, Upload, Play, Copy, Trash2, Clock, Sparkles, Wand2, Shield, ArrowRight, Download, CheckSquare, Square, FolderArchive } from 'lucide-react';
+import { downloadProjectFile } from '../lib/projectPackage';
 
 interface HomeScreenProps {
   projects: Project[];
   onSelectProject: (id: string) => void;
   onNewRecording: () => void;
   onImportVideo: (file: File) => void;
+  onImportProject?: (file: File) => void;
   onCreateSampleProject: (template: 'saas' | 'api' | 'ecom') => void;
   onDuplicateProject: (id: string) => void;
   onDeleteProject: (id: string) => void;
@@ -19,6 +21,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onSelectProject,
   onNewRecording,
   onImportVideo,
+  onImportProject,
   onCreateSampleProject,
   onDuplicateProject,
   onDeleteProject,
@@ -26,12 +29,30 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   isGeneratingSample,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const projectInputRef = useRef<HTMLInputElement>(null);
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      onImportVideo(file);
+      if (file.name.endsWith('.demoproj') || file.name.endsWith('.json')) {
+        if (onImportProject) onImportProject(file);
+        else onImportVideo(file);
+      } else {
+        onImportVideo(file);
+      }
+      e.target.value = '';
+    }
+  };
+
+  const handleProjectFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (onImportProject) {
+        onImportProject(file);
+      } else {
+        onImportVideo(file);
+      }
       e.target.value = '';
     }
   };
@@ -64,6 +85,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  };
+
+  const handleExportProjectFile = async (proj: Project, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    try {
+      await downloadProjectFile(proj);
+    } catch (err) {
+      console.error('Failed to export project file:', err);
+      alert('Could not export project file. Please ensure project video is loaded.');
+    }
   };
 
   const handleDownloadSelected = async () => {
@@ -131,7 +162,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </p>
 
           {/* Action Buttons */}
-          <div className="flex flex-wrap items-center gap-4 pt-2">
+          <div className="flex flex-wrap items-center gap-3 pt-2">
             <button
               onClick={onNewRecording}
               className="px-6 py-3.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-semibold text-sm flex items-center gap-2.5 shadow-xl shadow-sky-500/25 transition-all hover:scale-[1.02] active:scale-[0.98]"
@@ -141,18 +172,36 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             </button>
 
             <button
+              onClick={() => projectInputRef.current?.click()}
+              className="px-5 py-3.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 font-semibold text-sm flex items-center gap-2 transition-all shadow-md shadow-emerald-500/10"
+              title="Import previously saved .demoproj project package"
+            >
+              <FolderArchive className="w-4 h-4 text-emerald-400" />
+              <span>Import Project (.demoproj)</span>
+            </button>
+
+            <button
               onClick={() => fileInputRef.current?.click()}
               className="px-5 py-3.5 rounded-xl bg-slate-800 hover:bg-slate-700/80 text-slate-200 border border-slate-700 font-semibold text-sm flex items-center gap-2 transition-all"
+              title="Import MP4 / WebM / MOV raw video"
             >
               <Upload className="w-4 h-4 text-slate-400" />
-              <span>Import Video File</span>
+              <span>Import Video</span>
             </button>
 
             <input
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
-              accept="video/mp4,video/webm,video/quicktime"
+              accept="video/mp4,video/webm,video/quicktime,.demoproj,.json"
+              className="hidden"
+            />
+
+            <input
+              type="file"
+              ref={projectInputRef}
+              onChange={handleProjectFileChange}
+              accept=".demoproj,.json,application/json"
               className="hidden"
             />
           </div>
@@ -160,7 +209,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           {/* Quick Privacy Notice */}
           <div className="flex items-center gap-2 text-xs text-slate-400 pt-2">
             <Shield className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-            <span>Your recordings stay 100% private on your machine. No cloud uploads required.</span>
+            <span>Your recordings and projects stay 100% private on your machine. No cloud uploads required.</span>
           </div>
         </div>
       </div>
@@ -392,9 +441,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
                       <div className="flex items-center gap-1">
                         <button
+                          onClick={(e) => handleExportProjectFile(proj, e)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all"
+                          title="Export Project File (.demoproj)"
+                        >
+                          <FolderArchive className="w-3.5 h-3.5" />
+                        </button>
+
+                        <button
                           onClick={(e) => handleDownloadVideo(proj, e)}
                           className="p-1.5 rounded-lg text-slate-400 hover:text-sky-400 hover:bg-sky-500/10 transition-all"
-                          title="Download Video File"
+                          title="Download Raw Video"
                         >
                           <Download className="w-3.5 h-3.5" />
                         </button>
@@ -432,3 +489,4 @@ function formatSeconds(sec: number): string {
   const s = Math.floor(sec % 60);
   return `${m}:${s < 10 ? '0' : ''}${s}`;
 }
+
