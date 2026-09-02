@@ -116,29 +116,110 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
     }
   }, []);
 
-  // Video Time Update Listener
+  // Video Time Update & Real-Time Seamless Segment Skipper
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    const handleTimeUpdate = () => {
-      setCurrentTime(video.currentTime);
+    let animId: number;
+
+    const syncPlayback = () => {
+      if (!video) return;
+
+      const segments = project.videoSegments && project.videoSegments.length > 0
+        ? project.videoSegments
+        : [{ id: 'seg_0', startTime: 0, endTime: project.duration || video.duration || 1, speed: 1.0 }];
+
+      const vTime = video.currentTime;
+
+      if (!video.paused) {
+        // Find which segment vTime is currently in
+        const currentSegIndex = segments.findIndex(
+          (seg) => vTime >= seg.startTime - 0.02 && vTime < seg.endTime - 0.02
+        );
+
+        if (currentSegIndex === -1) {
+          // vTime is outside any active segment (in a cut gap or past end)
+          const nextSegIndex = segments.findIndex((seg) => seg.startTime >= vTime - 0.02);
+          if (nextSegIndex !== -1) {
+            // Instant jump to the beginning of next active segment
+            video.currentTime = segments[nextSegIndex].startTime;
+            setCurrentTime(segments[nextSegIndex].startTime);
+          } else {
+            // Reached past all segments -> end playback cleanly
+            video.pause();
+            setIsPlaying(false);
+            if (segments[0]) {
+              video.currentTime = segments[0].startTime;
+              setCurrentTime(segments[0].startTime);
+            }
+            return;
+          }
+        } else {
+          const currentSeg = segments[currentSegIndex];
+          // If we reached the end of the current segment:
+          if (vTime >= currentSeg.endTime - 0.03) {
+            if (currentSegIndex < segments.length - 1) {
+              const nextSeg = segments[currentSegIndex + 1];
+              video.currentTime = nextSeg.startTime;
+              setCurrentTime(nextSeg.startTime);
+            } else {
+              // Reached end of final segment
+              video.pause();
+              setIsPlaying(false);
+              if (segments[0]) {
+                video.currentTime = segments[0].startTime;
+                setCurrentTime(segments[0].startTime);
+              }
+              return;
+            }
+          } else {
+            setCurrentTime(vTime);
+          }
+        }
+      }
+
+      if (isPlaying) {
+        animId = requestAnimationFrame(syncPlayback);
+      }
     };
 
     const handleEnded = () => {
       setIsPlaying(false);
     };
 
-    video.addEventListener('timeupdate', handleTimeUpdate);
+    const handleTimeUpdate = () => {
+      if (video.paused) {
+        setCurrentTime(video.currentTime);
+      }
+    };
+
     video.addEventListener('ended', handleEnded);
+    video.addEventListener('timeupdate', handleTimeUpdate);
+
+    if (isPlaying) {
+      animId = requestAnimationFrame(syncPlayback);
+    }
 
     return () => {
-      video.removeEventListener('timeupdate', handleTimeUpdate);
+      if (animId) cancelAnimationFrame(animId);
       video.removeEventListener('ended', handleEnded);
+      video.removeEventListener('timeupdate', handleTimeUpdate);
     };
-  }, []);
+  }, [isPlaying, project.videoSegments, project.duration]);
 
   const handlePlayPause = () => {
+    const video = videoRef.current;
+    if (!isPlaying && video) {
+      const segments = project.videoSegments && project.videoSegments.length > 0 ? project.videoSegments : null;
+      if (segments && segments.length > 0) {
+        const lastSeg = segments[segments.length - 1];
+        if (currentTime >= lastSeg.endTime - 0.05) {
+          video.currentTime = segments[0].startTime;
+          setCurrentTime(segments[0].startTime);
+        }
+      }
+    }
     setIsPlaying(!isPlaying);
   };
 

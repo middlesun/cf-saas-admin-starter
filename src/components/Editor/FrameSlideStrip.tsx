@@ -65,51 +65,75 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
   // Multi-selection state
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
 
-  // Cached thumbnails: frameIndex -> dataURL
-  const [thumbnails, setThumbnails] = useState<Map<number, string>>(new Map());
+  // Cached thumbnails: timestamp string -> dataURL (prevents re-fetching when deleting frames)
+  const [thumbnails, setThumbnails] = useState<Map<string, string>>(new Map());
   const isGeneratingRef = useRef<boolean>(false);
 
-  // Calculate base duration
-  const totalDuration = Math.max(0.1, project.duration || 1);
+  // Calculate active segments
+  const activeSegments = useMemo<VideoSegment[]>(() => {
+    if (project.videoSegments && project.videoSegments.length > 0) {
+      return project.videoSegments;
+    }
+    return [
+      {
+        id: 'seg_default',
+        startTime: 0,
+        endTime: Math.max(0.1, project.duration || 1),
+        speed: 1.0,
+      },
+    ];
+  }, [project.videoSegments, project.duration]);
 
-  // Generate Frame Model
+  // Frame interval
   const frameInterval = 1 / fps; // in seconds
   const frameDurationMs = Math.round(frameInterval * 1000); // in ms (e.g. 66ms at 15fps)
-  const totalFrames = Math.max(1, Math.ceil(totalDuration / frameInterval));
 
-  // Determine if a timestamp is within the active video segments
-  const isTimeInKeptSegments = useCallback(
-    (time: number): boolean => {
-      if (!project.videoSegments || project.videoSegments.length === 0) return true;
-      return project.videoSegments.some((seg) => time >= seg.startTime - 0.001 && time <= seg.endTime + 0.001);
-    },
-    [project.videoSegments]
-  );
-
-  // Construct frame list
+  // Construct frame list ONLY from active kept segments (completely excluding deleted portions)
   const frames: FrameItem[] = useMemo(() => {
     const list: FrameItem[] = [];
-    for (let i = 0; i < totalFrames; i++) {
-      const startTime = parseFloat((i * frameInterval).toFixed(3));
-      const endTime = parseFloat(Math.min(totalDuration, (i + 1) * frameInterval).toFixed(3));
-      // Natural jitter in ms duration display just like ScreenToGif or exact computed ms
-      const ms = Math.round((endTime - startTime) * 1000);
-      list.push({
-        index: i,
-        startTime,
-        durationMs: ms > 0 ? ms : frameDurationMs,
-        endTime,
-        isKept: isTimeInKeptSegments(startTime + 0.005),
-      });
+    let runningIndex = 0;
+
+    for (let segIdx = 0; segIdx < activeSegments.length; segIdx++) {
+      const seg = activeSegments[segIdx];
+      const segDuration = Math.max(0, seg.endTime - seg.startTime);
+      const segFrames = Math.max(1, Math.round(segDuration / frameInterval));
+
+      for (let i = 0; i < segFrames; i++) {
+        const startTime = parseFloat((seg.startTime + i * frameInterval).toFixed(3));
+        const endTime = parseFloat(Math.min(seg.endTime, seg.startTime + (i + 1) * frameInterval).toFixed(3));
+        const durationMs = Math.max(1, Math.round((endTime - startTime) * 1000));
+
+        list.push({
+          index: runningIndex++,
+          startTime,
+          durationMs: durationMs > 0 ? durationMs : frameDurationMs,
+          endTime,
+          isKept: true,
+        });
+      }
     }
     return list;
-  }, [totalFrames, frameInterval, totalDuration, isTimeInKeptSegments, frameDurationMs]);
+  }, [activeSegments, frameInterval, frameDurationMs]);
 
   // Current active frame index based on playhead
   const currentFrameIndex = useMemo(() => {
-    const idx = Math.floor(currentTime / frameInterval);
-    return Math.max(0, Math.min(totalFrames - 1, idx));
-  }, [currentTime, frameInterval, totalFrames]);
+    if (frames.length === 0) return 0;
+    const matchIdx = frames.findIndex(
+      (f) => currentTime >= f.startTime - 0.005 && currentTime <= f.endTime + 0.005
+    );
+    if (matchIdx !== -1) return matchIdx;
+
+    let closestIdx = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < frames.length; i++) {
+      const diff = Math.abs(frames[i].startTime - currentTime);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestIdx = i;
+      }
+    }
+    return closestIdx;
+  }, [currentTime, frames]);
 
   // Auto-scroll filmstrip to keep playhead in view during playback
   useEffect(() => {
@@ -169,13 +193,14 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
       const activeVideo = offscreenVideo || video;
 
       // Extract batch of thumbnails
-      const newThumbs = new Map<number, string>(thumbnails);
+      const newThumbs = new Map<string, string>(thumbnails);
 
       for (let i = 0; i < frames.length; i += 1) {
         if (isCancelled) break;
-        if (newThumbs.has(i)) continue;
-
         const frame = frames[i];
+        const timeKey = frame.startTime.toFixed(3);
+        if (newThumbs.has(timeKey)) continue;
+
         const time = frame.startTime;
 
         // Clear canvas
@@ -240,7 +265,7 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
 
         try {
           const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
-          newThumbs.set(i, dataUrl);
+          newThumbs.set(timeKey, dataUrl);
         } catch {
           // ignore
         }
@@ -354,8 +379,7 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
     if (selectedIndices.size === 0) return;
 
     // Filter out frames that are selected for deletion
-    // And convert remaining kept frames into contiguous VideoSegments
-    const keptFrames = frames.filter((f) => !selectedIndices.has(f.index) && f.isKept);
+    const keptFrames = frames.filter((f) => !selectedIndices.has(f.index));
 
     if (keptFrames.length === 0) {
       alert('Cannot delete all frames. At least one frame must remain.');
@@ -371,8 +395,8 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
       const prevFrame = keptFrames[i - 1];
       const currFrame = keptFrames[i];
 
-      // If frames are contiguous (index diff === 1), extend current segment
-      if (currFrame.index === prevFrame.index + 1) {
+      // If frames are contiguous in source video time
+      if (Math.abs(currFrame.startTime - prevFrame.endTime) < 0.02) {
         segEnd = currFrame.endTime;
       } else {
         // Break in sequence -> finish current segment and start next
@@ -561,11 +585,11 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
         {frames.map((frame) => {
           const isSelected = selectedIndices.has(frame.index);
           const isCurrentPlayhead = frame.index === currentFrameIndex;
-          const thumbUrl = thumbnails.get(frame.index);
+          const thumbUrl = thumbnails.get(frame.startTime.toFixed(3));
 
           return (
             <div
-              key={frame.index}
+              key={`${frame.index}_${frame.startTime}`}
               onClick={(e) => handleFrameClick(e, frame.index)}
               style={{ width: `${cardWidth}px` }}
               className={`shrink-0 flex flex-col rounded-lg transition-all cursor-pointer select-none group relative ${
@@ -573,9 +597,7 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
                   ? 'ring-2 ring-sky-400 bg-sky-950/40 border-2 border-dashed border-sky-400 shadow-lg shadow-sky-500/20'
                   : isCurrentPlayhead
                   ? 'ring-2 ring-amber-400 bg-amber-950/20 border border-amber-400/80'
-                  : frame.isKept
-                  ? 'border border-slate-800 bg-[#0d1424] hover:border-slate-600 hover:bg-slate-800/60'
-                  : 'border border-rose-900/60 bg-rose-950/30 opacity-60'
+                  : 'border border-slate-800 bg-[#0d1424] hover:border-slate-600 hover:bg-slate-800/60'
               }`}
               title={`Frame #${frame.index} | Time: ${frame.startTime.toFixed(3)}s | Duration: ${frame.durationMs}ms ${
                 isSelected ? '(Selected)' : ''
@@ -605,19 +627,12 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
                   <img
                     src={thumbUrl}
                     alt={`Frame ${frame.index}`}
-                    className={`w-full h-full object-cover ${!frame.isKept ? 'grayscale' : ''}`}
+                    className="w-full h-full object-cover"
                     loading="lazy"
                   />
                 ) : (
                   <div className="flex flex-col items-center justify-center text-[10px] text-slate-500 animate-pulse">
                     <span className="font-mono">#{frame.index}</span>
-                  </div>
-                )}
-
-                {/* Excluded Frame Overlay */}
-                {!frame.isKept && (
-                  <div className="absolute inset-0 bg-rose-950/70 backdrop-blur-[1px] flex items-center justify-center text-rose-300 text-[10px] font-bold">
-                    <span>CUT</span>
                   </div>
                 )}
               </div>

@@ -383,45 +383,21 @@ export async function renderAndExportVideo(
       if (activeTransition) {
         renderTransitionCardFrame(gifCtx, gifWidth, gifHeight, activeTransition, currentTime - activeTransition.timestamp);
       } else {
-        // 2. Video frame rendering
+        // 2. Video frame rendering with 100% compositing parity (aspect-fit, zooms, clicks, annotations)
         const sourceTime = calculateSourceTime(project, currentTime);
         if (exportVideo.readyState >= 1) {
           await seekVideoElement(exportVideo, sourceTime);
         }
 
-        const zoom = calculateZoomTransformAtTime(project.zoomEvents || [], currentTime);
-
-        gifCtx.save();
-        if (zoom.scale > 1.0) {
-          const centerX = (zoom.x / 100) * gifWidth;
-          const centerY = (zoom.y / 100) * gifHeight;
-          gifCtx.translate(centerX, centerY);
-          gifCtx.scale(zoom.scale, zoom.scale);
-          gifCtx.translate(-centerX, -centerY);
-        }
-
-        try {
-          gifCtx.drawImage(exportVideo, 0, 0, gifWidth, gifHeight);
-        } catch {
-          gifCtx.fillStyle = '#0f172a';
-          gifCtx.fillRect(0, 0, gifWidth, gifHeight);
-        }
-
-        // Draw Clicks
-        project.clickAnimations?.forEach((click) => {
-          if (currentTime >= click.timestamp && currentTime <= click.timestamp + click.duration) {
-            renderClickAnimation(gifCtx, gifWidth, gifHeight, click, currentTime - click.timestamp);
-          }
-        });
-
-        // Draw Annotations
-        project.annotations?.forEach((ann) => {
-          if (currentTime >= ann.startTime && currentTime <= ann.startTime + ann.duration) {
-            renderAnnotation(gifCtx, gifWidth, gifHeight, ann, currentTime - ann.startTime);
-          }
-        });
-
-        gifCtx.restore();
+        drawCompositedFrame(
+          gifCtx,
+          exportVideo,
+          project,
+          currentTime,
+          gifWidth,
+          gifHeight,
+          gifSourceAspect
+        );
       }
 
       // Stream frame directly into binary GIF encoder (ImageData is immediately discarded)
@@ -882,19 +858,25 @@ export function renderAnnotation(
     displayText = ann.text.substring(0, Math.max(1, Math.min(ann.text.length, charsToShow)));
   }
 
-  // Typography settings
+  // Proportional scale factor relative to 1080p standard reference
+  const scaleFactor = Math.max(0.4, canvasHeight / 1080);
+
+  // Typography settings with proportional resolution scaling
   const fontWeight = ann.fontWeight || '600';
   const fontStyle = ann.fontStyle === 'italic' ? 'italic ' : '';
-  const fontSize = ann.fontSize || 16;
+  const baseFontSize = ann.fontSize || 16;
+  const fontSize = Math.round(baseFontSize * scaleFactor);
   const fontFamily = ann.fontFamily || 'system-ui, -apple-system, sans-serif';
 
   ctx.font = `${fontStyle}${fontWeight} ${fontSize}px ${fontFamily}`;
   ctx.textBaseline = 'top'; // Crucial for correct vertical alignment
 
-  const paddingH = ann.padding ?? 18;
-  const paddingV = ann.padding ? Math.max(10, Math.round(ann.padding * 0.75)) : 12;
-  const radius = ann.borderRadius ?? 12;
-  const maxCardWidth = Math.min(500, canvasWidth * 0.5);
+  const rawPadH = ann.padding ?? 18;
+  const rawPadV = ann.padding ? Math.max(10, Math.round(ann.padding * 0.75)) : 12;
+  const paddingH = Math.round(rawPadH * scaleFactor);
+  const paddingV = Math.round(rawPadV * scaleFactor);
+  const radius = Math.round((ann.borderRadius ?? 12) * scaleFactor);
+  const maxCardWidth = Math.min(Math.round(500 * scaleFactor), canvasWidth * 0.5);
 
   // Wrap text lines
   const lines = wrapText(ctx, displayText, maxCardWidth - paddingH * 2);
