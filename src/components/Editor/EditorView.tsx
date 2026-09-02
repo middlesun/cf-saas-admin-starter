@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Project, TextAnnotation, ClickAnimation, TransitionCard, AudioTrack, VideoSegment } from '../../types';
 import { VideoPreview } from './VideoPreview';
 import { Timeline } from './Timeline';
@@ -34,6 +34,14 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
   // History Stack for Undo/Redo
   const [history, setHistory] = useState<Project[]>([project]);
   const [historyIndex, setHistoryIndex] = useState<number>(0);
+  const historyRef = useRef<Project[]>([project]);
+  const historyIndexRef = useRef<number>(0);
+
+  // Keep historyRef and historyIndexRef in sync with state
+  useEffect(() => {
+    historyRef.current = history;
+    historyIndexRef.current = historyIndex;
+  }, [history, historyIndex]);
 
   // Selected item IDs
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
@@ -74,30 +82,61 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
     setTimeout(() => setIsSaved(false), 2000);
 
     // Append to history stack if distinct
-    setHistory((prev) => {
-      const sliced = prev.slice(0, historyIndex + 1);
-      return [...sliced, newProject];
-    });
-    setHistoryIndex((prev) => prev + 1);
+    const nextIdx = historyIndexRef.current + 1;
+    const nextHistory = [...historyRef.current.slice(0, nextIdx), newProject];
+    historyRef.current = nextHistory;
+    historyIndexRef.current = nextIdx;
+    setHistory(nextHistory);
+    setHistoryIndex(nextIdx);
   };
 
-  const handleUndo = () => {
-    if (historyIndex > 0) {
-      const prevProject = history[historyIndex - 1];
-      setHistoryIndex(historyIndex - 1);
+  const handleUndo = useCallback(() => {
+    if (historyIndexRef.current > 0) {
+      const prevIdx = historyIndexRef.current - 1;
+      historyIndexRef.current = prevIdx;
+      setHistoryIndex(prevIdx);
+      const prevProject = historyRef.current[prevIdx];
       onUpdateProject(prevProject);
       saveProject(prevProject);
     }
-  };
+  }, [onUpdateProject]);
 
-  const handleRedo = () => {
-    if (historyIndex < history.length - 1) {
-      const nextProject = history[historyIndex + 1];
-      setHistoryIndex(historyIndex + 1);
+  const handleRedo = useCallback(() => {
+    if (historyIndexRef.current < historyRef.current.length - 1) {
+      const nextIdx = historyIndexRef.current + 1;
+      historyIndexRef.current = nextIdx;
+      setHistoryIndex(nextIdx);
+      const nextProject = historyRef.current[nextIdx];
       onUpdateProject(nextProject);
       saveProject(nextProject);
     }
-  };
+  }, [onUpdateProject]);
+
+  // Global Keyboard listener for Undo (Ctrl+Z / Cmd+Z) and Redo (Ctrl+Y / Cmd+Shift+Z)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept if user is typing in text inputs or textareas
+      const tagName = (document.activeElement?.tagName || '').toUpperCase();
+      if (['INPUT', 'TEXTAREA'].includes(tagName)) return;
+
+      const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+      const isCmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+
+      if (isCmdOrCtrl && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        handleUndo();
+      } else if (
+        (isCmdOrCtrl && e.key.toLowerCase() === 'y') ||
+        (isCmdOrCtrl && e.shiftKey && e.key.toLowerCase() === 'z')
+      ) {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleUndo, handleRedo]);
 
   // Auto-generate zooms on project load if empty and clicks exist
   useEffect(() => {
@@ -543,6 +582,8 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
             onSeek={handleSeek}
             onUpdateSegments={handleUpdateSegments}
             videoRef={videoRef}
+            onUndo={handleUndo}
+            canUndo={historyIndex > 0}
           />
 
           {/* Quick Editing Tools: Audio Track, Smart Zoom & Clicks, High-Quality Exports */}
@@ -760,6 +801,8 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
                   onSeek={handleSeek}
                   onUpdateSegments={handleUpdateSegments}
                   videoRef={videoRef}
+                  onUndo={handleUndo}
+                  canUndo={historyIndex > 0}
                 />
               )}
 
@@ -1111,6 +1154,8 @@ export const EditorView: React.FC<EditorViewProps> = ({ project, onUpdateProject
                   onSeek={handleSeek}
                   onUpdateSegments={handleUpdateSegments}
                   videoRef={videoRef}
+                  onUndo={handleUndo}
+                  canUndo={historyIndex > 0}
                 />
               )}
 

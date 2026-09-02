@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ExportProgress, ExportOptions } from '../../lib/videoExporter';
-import { Sparkles, Download, CheckCircle2, AlertTriangle, X, Film, FileImage, Settings2, Play, RefreshCw, Eye, FolderArchive, Layers, Clock } from 'lucide-react';
+import { Sparkles, Download, CheckCircle2, AlertTriangle, X, Film, FileImage, Settings2, Play, RefreshCw, Eye, FolderArchive, Layers, Clock, Cpu, Volume2, Gauge } from 'lucide-react';
 import { Project } from '../../types';
 
 interface ExportModalProps {
@@ -376,23 +376,74 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
         {/* Progress Body (While Rendering) */}
         {isRendering && (
-          <div className="space-y-5 py-4">
+          <div className="space-y-4 py-3" id="export-rendering-status">
             <div className="flex justify-between items-center text-xs font-semibold">
-              <span className="text-slate-300">{progress.status}</span>
-              <span className="text-sky-400 font-mono text-sm">{progress.percentage}%</span>
+              <span className="text-slate-300 line-clamp-1">{progress.status}</span>
+              <span className="text-sky-400 font-mono text-sm shrink-0 ml-2">{progress.percentage}%</span>
             </div>
 
             {/* Custom Progress Bar */}
-            <div className="w-full h-3 rounded-full bg-slate-800 overflow-hidden p-0.5 border border-slate-700">
+            <div className="w-full h-2.5 rounded-full bg-slate-800 overflow-hidden p-0.5 border border-slate-700">
               <div
                 style={{ width: `${progress.percentage}%` }}
                 className="h-full rounded-full bg-gradient-to-r from-sky-500 to-blue-600 transition-all duration-300 shadow-md shadow-sky-500/50"
               />
             </div>
 
-            <p className="text-[11px] text-slate-400 text-center">
-              Please leave this window open while your export is being prepared.
-            </p>
+            {/* Real-time Hardware Telemetry Bar */}
+            {progress.totalFrames ? (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                <div className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80">
+                  <Film className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Frames</p>
+                    <p className="text-xs font-mono font-medium text-slate-200 truncate">
+                      {progress.currentFrame || 0} / {progress.totalFrames}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80">
+                  <Gauge className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Framerate</p>
+                    <p className="text-xs font-mono font-medium text-slate-200 truncate">
+                      {progress.fps || selectedFps} FPS
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80">
+                  <Cpu className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Bitrate</p>
+                    <p className="text-xs font-mono font-medium text-slate-200 truncate">
+                      {progress.bitrateMbps ? `${progress.bitrateMbps} Mbps` : 'Adaptive'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80">
+                  <Volume2 className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Audio</p>
+                    <p className="text-xs font-mono font-medium text-slate-200 truncate">
+                      {progress.hasAudio ? '48kHz Stereo' : 'Video Only'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+              <span>Please leave this window open while your export is being prepared.</span>
+              {progress.estimatedRemainingSecs !== undefined && progress.estimatedRemainingSecs > 0 ? (
+                <span className="flex items-center gap-1 text-slate-400 font-mono">
+                  <Clock className="w-3 h-3 text-slate-500" />
+                  ~{progress.estimatedRemainingSecs}s remaining
+                </span>
+              ) : null}
+            </div>
           </div>
         )}
 

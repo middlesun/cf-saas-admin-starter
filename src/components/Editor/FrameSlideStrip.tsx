@@ -24,6 +24,8 @@ import {
   SlidersHorizontal,
   Zap,
   ArrowLeftRight,
+  LayoutGrid,
+  Undo2,
 } from 'lucide-react';
 
 interface FrameSlideStripProps {
@@ -34,6 +36,8 @@ interface FrameSlideStripProps {
   onSeek: (time: number) => void;
   onUpdateSegments: (segments: VideoSegment[]) => void;
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  onUndo?: () => void;
+  canUndo?: boolean;
 }
 
 export interface FrameItem {
@@ -52,13 +56,20 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
   onSeek,
   onUpdateSegments,
   videoRef,
+  onUndo,
+  canUndo = false,
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const gridContainerRef = useRef<HTMLDivElement>(null);
   const isAutoScrollingRef = useRef<boolean>(false);
+
+  // Layout and Frame Size Mode
+  const [layoutMode, setLayoutMode] = useState<'strip' | 'grid'>('strip');
+  const [frameSize, setFrameSize] = useState<'small' | 'medium' | 'large'>('medium');
 
   // Settings
   const [fps, setFps] = useState<number>(15); // 15 fps gives ~66ms per frame matching ScreenToGif
-  const [zoomPercent, setZoomPercent] = useState<number>(68); // 68% default from screenshot
+  const [zoomPercent, setZoomPercent] = useState<number>(80);
   const [autoScrollToPlayhead, setAutoScrollToPlayhead] = useState<boolean>(true);
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null);
 
@@ -135,22 +146,43 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
     return closestIdx;
   }, [currentTime, frames]);
 
-  // Auto-scroll filmstrip to keep playhead in view during playback
-  useEffect(() => {
-    if (!autoScrollToPlayhead || !scrollContainerRef.current || isPlaying === false) return;
-    const container = scrollContainerRef.current;
-    const cardWidth = Math.round(90 * (zoomPercent / 68));
-    const targetScrollLeft = currentFrameIndex * (cardWidth + 8) - container.clientWidth / 2 + cardWidth / 2;
+  // Frame Card Dimensions scaled by frameSize and zoomPercent
+  const sizePresets = {
+    small: { width: 112, height: 63, label: 'Small' },
+    medium: { width: 192, height: 108, label: 'Medium' },
+    large: { width: 320, height: 180, label: 'Large' },
+  };
+  const baseDim = sizePresets[frameSize];
+  const scale = zoomPercent / 80;
+  const cardWidth = Math.round(baseDim.width * scale);
+  const cardHeight = Math.round(baseDim.height * scale);
 
-    isAutoScrollingRef.current = true;
-    container.scrollTo({
-      left: Math.max(0, targetScrollLeft),
-      behavior: 'smooth',
-    });
-    setTimeout(() => {
-      isAutoScrollingRef.current = false;
-    }, 150);
-  }, [currentFrameIndex, zoomPercent, autoScrollToPlayhead, isPlaying]);
+  // Auto-scroll to keep playhead in view during playback
+  useEffect(() => {
+    if (!autoScrollToPlayhead || isPlaying === false) return;
+
+    if (layoutMode === 'strip') {
+      if (!scrollContainerRef.current) return;
+      const container = scrollContainerRef.current;
+      const targetScrollLeft = currentFrameIndex * (cardWidth + 10) - container.clientWidth / 2 + cardWidth / 2;
+
+      isAutoScrollingRef.current = true;
+      container.scrollTo({
+        left: Math.max(0, targetScrollLeft),
+        behavior: 'smooth',
+      });
+      setTimeout(() => {
+        isAutoScrollingRef.current = false;
+      }, 150);
+    } else {
+      // Grid mode: ensure active playhead element is visible vertically
+      if (!gridContainerRef.current) return;
+      const activeEl = gridContainerRef.current.querySelector(`[data-frame-idx="${currentFrameIndex}"]`) as HTMLElement | null;
+      if (activeEl) {
+        activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      }
+    }
+  }, [currentFrameIndex, autoScrollToPlayhead, isPlaying, layoutMode]);
 
   // Progressive thumbnail extractor from video & project overlays
   useEffect(() => {
@@ -161,10 +193,10 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
       if (!video || isGeneratingRef.current) return;
       isGeneratingRef.current = true;
 
-      // Offscreen canvas for rendering frame preview
+      // Offscreen canvas for rendering frame preview (crisp 360x202 for readable screen text & code)
       const canvas = document.createElement('canvas');
-      const previewWidth = 160;
-      const previewHeight = 90;
+      const previewWidth = 360;
+      const previewHeight = 202;
       canvas.width = previewWidth;
       canvas.height = previewHeight;
       const ctx = canvas.getContext('2d');
@@ -264,7 +296,7 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
         }
 
         try {
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
           newThumbs.set(timeKey, dataUrl);
         } catch {
           // ignore
@@ -435,7 +467,12 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
       // Don't trigger if focus is on an input or textarea
       if (['INPUT', 'TEXTAREA'].includes((document.activeElement?.tagName || ''))) return;
 
-      if (e.key === 'Delete' || e.key === 'Backspace') {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        if (onUndo) {
+          e.preventDefault();
+          onUndo();
+        }
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedIndices.size > 0) {
           e.preventDefault();
           handleDeleteSelectedFrames();
@@ -459,27 +496,156 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedIndices, currentFrameIndex, frames]);
-
-  // Frame Card Dimensions scaled by zoomPercent
-  const scale = zoomPercent / 68;
-  const cardWidth = Math.round(96 * scale);
-  const cardHeight = Math.round(54 * scale);
+  }, [selectedIndices, currentFrameIndex, frames, onUndo]);
 
   const selectedCount = selectedIndices.size;
   const unselectedCount = frames.length - selectedCount;
+  const selectedDuration = useMemo(() => {
+    let dur = 0;
+    frames.forEach((f) => {
+      if (selectedIndices.has(f.index)) {
+        dur += f.durationMs / 1000;
+      }
+    });
+    return dur;
+  }, [frames, selectedIndices]);
+
+  const renderFrameCard = (frame: FrameItem, isGrid: boolean) => {
+    const isSelected = selectedIndices.has(frame.index);
+    const isCurrentPlayhead = frame.index === currentFrameIndex;
+    const thumbUrl = thumbnails.get(frame.startTime.toFixed(3));
+
+    return (
+      <div
+        key={`${frame.index}_${frame.startTime}`}
+        data-frame-idx={frame.index}
+        onClick={(e) => handleFrameClick(e, frame.index)}
+        style={isGrid ? { width: '100%' } : { width: `${cardWidth}px` }}
+        className={`shrink-0 flex flex-col rounded-xl transition-all cursor-pointer select-none group relative overflow-hidden ${
+          isSelected
+            ? 'ring-2 ring-sky-400 bg-sky-950/40 border-2 border-dashed border-sky-400 shadow-xl shadow-sky-500/20'
+            : isCurrentPlayhead
+            ? 'ring-2 ring-amber-400 bg-amber-950/20 border border-amber-400/80'
+            : 'border border-slate-800 bg-[#0d1424] hover:border-slate-600 hover:bg-slate-800/60'
+        }`}
+        title={`Frame #${frame.index} | Time: ${frame.startTime.toFixed(3)}s | Duration: ${frame.durationMs}ms (Click to select, Shift+Click for range) ${
+          isSelected ? '• [SELECTED]' : ''
+        }`}
+      >
+        {/* Playhead Marker Tag */}
+        {isCurrentPlayhead && (
+          <div className="absolute top-1.5 left-1.5 bg-amber-400 text-slate-950 text-[9px] font-black px-1.5 py-0.5 rounded-full uppercase tracking-tight shadow-md z-10 flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-950 animate-ping" />
+            <span>NOW</span>
+          </div>
+        )}
+
+        {/* Selection Checkmark Badge */}
+        {isSelected && (
+          <div className="absolute top-1.5 right-1.5 bg-sky-500 text-white rounded-full p-0.5 shadow-md z-10">
+            <Check className="w-3 h-3 stroke-[3]" />
+          </div>
+        )}
+
+        {/* Thumbnail Container */}
+        <div
+          style={{ height: `${cardHeight}px` }}
+          className="w-full bg-[#05070e] rounded-t-lg overflow-hidden relative flex items-center justify-center"
+        >
+          {thumbUrl ? (
+            <img
+              src={thumbUrl}
+              alt={`Frame ${frame.index}`}
+              className="w-full h-full object-cover"
+              loading="lazy"
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center text-[10px] text-slate-500 animate-pulse">
+              <span className="font-mono">#{frame.index}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Frame Footer (Index + Milliseconds Duration matching ScreenToGif + Timestamp) */}
+        <div className="px-2 py-1.5 flex items-center justify-between text-[10px] font-mono border-t border-slate-800/60 bg-[#0a0f1d] rounded-b-xl">
+          <span className={`font-bold ${isSelected ? 'text-sky-300' : isCurrentPlayhead ? 'text-amber-300' : 'text-slate-300'}`}>
+            #{frame.index}
+          </span>
+          <span className="text-[9px] text-slate-400">
+            {frame.startTime.toFixed(2)}s
+          </span>
+          <span className={`text-[9px] font-medium ${isSelected ? 'text-sky-400 font-semibold' : 'text-slate-400'}`}>
+            {frame.durationMs}ms
+          </span>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="bg-[#0b101d] border border-slate-800/90 rounded-2xl overflow-hidden shadow-2xl flex flex-col select-none text-slate-200">
       {/* Top Action Ribbon / Bulk Toolbar */}
-      <div className="flex flex-wrap items-center justify-between px-4 py-2.5 bg-[#0e1628] border-b border-slate-800/80 gap-2 text-xs">
-        {/* Left: Quick Select Controls */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="font-semibold text-slate-300 mr-1 flex items-center gap-1">
+      <div className="flex flex-wrap items-center justify-between px-4 py-2.5 bg-[#0e1628] border-b border-slate-800/80 gap-2.5 text-xs">
+        {/* Left: Layout Switcher, Frame Size Selector & Quick Select Controls */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-semibold text-slate-300 mr-1 flex items-center gap-1.5">
             <Layers className="w-3.5 h-3.5 text-sky-400" />
             <span>Frame Slides:</span>
           </span>
 
+          {/* Layout Mode Toggle: Single Row vs Multi-Line Grid */}
+          <div className="flex items-center bg-[#141e34] p-0.5 rounded-lg border border-slate-700/60">
+            <button
+              onClick={() => setLayoutMode('strip')}
+              className={`px-2 py-1 rounded-md text-[11px] font-semibold flex items-center gap-1 transition-all ${
+                layoutMode === 'strip'
+                  ? 'bg-sky-500 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="Single Row Filmstrip layout (horizontal scroll)"
+            >
+              <SlidersHorizontal className="w-3 h-3" />
+              <span>Single Row</span>
+            </button>
+            <button
+              onClick={() => setLayoutMode('grid')}
+              className={`px-2 py-1 rounded-md text-[11px] font-semibold flex items-center gap-1 transition-all ${
+                layoutMode === 'grid'
+                  ? 'bg-sky-500 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="Multi-Line Grid layout (broader panel for mass selection & inspection)"
+            >
+              <LayoutGrid className="w-3 h-3" />
+              <span>Multi-Line Grid</span>
+            </button>
+          </div>
+
+          {/* Frame Size Switcher: Small / Medium / Large */}
+          <div className="flex items-center bg-[#141e34] p-0.5 rounded-lg border border-slate-700/60 text-[11px]">
+            <span className="text-slate-400 px-1.5 font-medium text-[10px] uppercase tracking-wider">Size:</span>
+            {(['small', 'medium', 'large'] as const).map((sz) => (
+              <button
+                key={sz}
+                onClick={() => {
+                  setFrameSize(sz);
+                  setZoomPercent(80);
+                }}
+                className={`px-2 py-0.5 rounded-md font-semibold capitalize transition-all ${
+                  frameSize === sz
+                    ? 'bg-sky-500 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title={`Switch frame thumbnail size to ${sz} (${sz === 'large' ? 'high fidelity for reading text & code' : sz === 'small' ? 'high density overview' : 'balanced view'})`}
+              >
+                {sz}
+              </button>
+            ))}
+          </div>
+
+          <div className="h-4 w-px bg-slate-700/80 mx-0.5 hidden sm:block" />
+
+          {/* Quick Selection Buttons */}
           <button
             onClick={handleSelectAll}
             className="px-2.5 py-1 rounded-lg bg-[#141e34] hover:bg-slate-700 text-slate-300 font-medium transition-all flex items-center gap-1 border border-slate-700/60"
@@ -510,8 +676,6 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
           )}
 
           {/* Quick Select Range Presets */}
-          <div className="h-4 w-px bg-slate-700 mx-1 hidden sm:block" />
-
           <button
             onClick={handleSelectFromStartToCurrent}
             className="px-2 py-1 rounded-lg bg-[#141e34]/70 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-[11px] transition-all hidden md:flex items-center gap-1"
@@ -536,6 +700,18 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
             <Zap className="w-3 h-3 text-amber-400" />
             <span>Every 2nd Frame</span>
           </button>
+
+          {onUndo && (
+            <button
+              onClick={onUndo}
+              disabled={!canUndo}
+              className="px-2 py-1 rounded-lg bg-[#141e34] hover:bg-slate-700 text-slate-300 font-medium transition-all flex items-center gap-1 border border-slate-700/60 disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Undo last action (Ctrl+Z)"
+            >
+              <Undo2 className="w-3.5 h-3.5 text-sky-400" />
+              <span className="hidden sm:inline">Undo (Ctrl+Z)</span>
+            </button>
+          )}
         </div>
 
         {/* Right: Delete Actions & FPS Density Switcher */}
@@ -568,138 +744,105 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
                 ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/30 active:scale-95 cursor-pointer animate-pulse'
                 : 'bg-slate-800/80 text-slate-500 cursor-not-allowed'
             }`}
-            title="Delete selected frames (Delete key)"
+            title="Delete selected frames (Delete / Backspace key)"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            <span>Delete Selected {selectedCount > 0 ? `(${selectedCount})` : ''}</span>
+            <span>
+              Delete Selected {selectedCount > 0 ? `(${selectedCount}${selectedDuration > 0 ? ` • ${selectedDuration.toFixed(1)}s` : ''})` : ''}
+            </span>
           </button>
         </div>
       </div>
 
-      {/* Frame Filmstrip Container (Scrollable Horizontal Strip like ScreenToGif) */}
-      <div
-        ref={scrollContainerRef}
-        className="overflow-x-auto overflow-y-hidden p-3 bg-[#080c16] scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-950 flex items-stretch gap-2.5 min-h-[125px] relative"
-        style={{ scrollBehavior: 'auto' }}
-      >
-        {frames.map((frame) => {
-          const isSelected = selectedIndices.has(frame.index);
-          const isCurrentPlayhead = frame.index === currentFrameIndex;
-          const thumbUrl = thumbnails.get(frame.startTime.toFixed(3));
-
-          return (
-            <div
-              key={`${frame.index}_${frame.startTime}`}
-              onClick={(e) => handleFrameClick(e, frame.index)}
-              style={{ width: `${cardWidth}px` }}
-              className={`shrink-0 flex flex-col rounded-lg transition-all cursor-pointer select-none group relative ${
-                isSelected
-                  ? 'ring-2 ring-sky-400 bg-sky-950/40 border-2 border-dashed border-sky-400 shadow-lg shadow-sky-500/20'
-                  : isCurrentPlayhead
-                  ? 'ring-2 ring-amber-400 bg-amber-950/20 border border-amber-400/80'
-                  : 'border border-slate-800 bg-[#0d1424] hover:border-slate-600 hover:bg-slate-800/60'
-              }`}
-              title={`Frame #${frame.index} | Time: ${frame.startTime.toFixed(3)}s | Duration: ${frame.durationMs}ms ${
-                isSelected ? '(Selected)' : ''
-              }`}
-            >
-              {/* Playhead Marker Tag */}
-              {isCurrentPlayhead && (
-                <div className="absolute -top-2 left-1/2 -translate-x-1/2 bg-amber-400 text-slate-950 text-[9px] font-black px-1.5 py-0.2 rounded-full uppercase tracking-tight shadow-md z-10 flex items-center gap-0.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-950 animate-ping" />
-                  <span>NOW</span>
-                </div>
-              )}
-
-              {/* Selection Checkmark Badge */}
-              {isSelected && (
-                <div className="absolute top-1 right-1 bg-sky-500 text-white rounded-full p-0.5 shadow-md z-10">
-                  <Check className="w-2.5 h-2.5 stroke-[3]" />
-                </div>
-              )}
-
-              {/* Thumbnail Container */}
-              <div
-                style={{ height: `${cardHeight}px` }}
-                className="w-full bg-[#05070e] rounded-t-md overflow-hidden relative flex items-center justify-center"
-              >
-                {thumbUrl ? (
-                  <img
-                    src={thumbUrl}
-                    alt={`Frame ${frame.index}`}
-                    className="w-full h-full object-cover"
-                    loading="lazy"
-                  />
-                ) : (
-                  <div className="flex flex-col items-center justify-center text-[10px] text-slate-500 animate-pulse">
-                    <span className="font-mono">#{frame.index}</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Frame Footer (Index + Milliseconds Duration matching ScreenToGif) */}
-              <div className="px-1.5 py-1 flex items-center justify-between text-[10px] font-mono border-t border-slate-800/60 bg-[#0a0f1d] rounded-b-md">
-                <span className={`font-bold ${isSelected ? 'text-sky-300' : isCurrentPlayhead ? 'text-amber-300' : 'text-slate-300'}`}>
-                  {frame.index}
-                </span>
-                <span className={`text-[9px] ${isSelected ? 'text-sky-400 font-semibold' : 'text-slate-400'}`}>
-                  {frame.durationMs} ms
-                </span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {/* Frame Container: Single Row (Filmstrip) or Multi-Line Grid */}
+      {layoutMode === 'strip' ? (
+        <div
+          ref={scrollContainerRef}
+          className="overflow-x-auto overflow-y-hidden p-3 bg-[#080c16] scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-950 flex items-stretch gap-2.5 min-h-[125px] relative"
+          style={{ scrollBehavior: 'auto' }}
+        >
+          {frames.map((frame) => renderFrameCard(frame, false))}
+        </div>
+      ) : (
+        <div
+          ref={gridContainerRef}
+          className="overflow-y-auto max-h-[580px] p-4 bg-[#080c16] scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-950 grid gap-3 relative select-none"
+          style={{
+            gridTemplateColumns: `repeat(auto-fill, minmax(${cardWidth}px, 1fr))`,
+          }}
+        >
+          {frames.map((frame) => renderFrameCard(frame, true))}
+        </div>
+      )}
 
       {/* ScreenToGif-Style Status & Navigation Footer */}
       <div className="flex items-center justify-between px-3 py-2 bg-[#0c1220] border-t border-slate-800/90 text-xs font-mono">
         {/* Left: Scroll Jump & Info */}
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              if (scrollContainerRef.current) {
-                scrollContainerRef.current.scrollBy({ left: -250, behavior: 'smooth' });
-              }
-            }}
-            className="p-1 rounded bg-[#131b2d] hover:bg-slate-700 text-slate-300 transition-all border border-slate-700/60"
-            title="Scroll Left"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
+          {layoutMode === 'strip' ? (
+            <button
+              onClick={() => {
+                if (scrollContainerRef.current) {
+                  scrollContainerRef.current.scrollBy({ left: -250, behavior: 'smooth' });
+                }
+              }}
+              className="p-1 rounded bg-[#131b2d] hover:bg-slate-700 text-slate-300 transition-all border border-slate-700/60"
+              title="Scroll Left"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                if (gridContainerRef.current) {
+                  gridContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }}
+              className="px-2 py-1 rounded bg-[#131b2d] hover:bg-slate-700 text-slate-300 text-[11px] transition-all border border-slate-700/60"
+              title="Scroll to Top"
+            >
+              Top
+            </button>
+          )}
 
           <span className="text-[11px] text-slate-400 hidden sm:inline">
-            Frame: <strong className="text-slate-200">{currentFrameIndex}</strong> / {frames.length - 1} ({currentTime.toFixed(2)}s)
+            Frame: <strong className="text-slate-200">{currentFrameIndex}</strong> / {frames.length > 0 ? frames.length - 1 : 0} ({currentTime.toFixed(2)}s)
           </span>
+          {layoutMode === 'grid' && (
+            <span className="text-[10px] text-slate-500 hidden md:inline">
+              • Shift+Click selects range across rows
+            </span>
+          )}
         </div>
 
         {/* Right: Zoom Slider, ScreenToGif Color Badges, Frame Step Controls */}
         <div className="flex items-center gap-3">
-          {/* Zoom Slider (68% like screenshot) */}
+          {/* Zoom Slider */}
           <div className="flex items-center gap-1.5 bg-[#131b2d] px-2.5 py-1 rounded-lg border border-slate-700/60">
             <ZoomIn className="w-3.5 h-3.5 text-slate-400" />
             <input
               type="range"
-              min={40}
+              min={50}
               max={150}
               value={zoomPercent}
               onChange={(e) => setZoomPercent(Number(e.target.value))}
               className="w-16 sm:w-20 accent-sky-500 cursor-pointer h-1.5 bg-slate-700 rounded-lg"
               title="Adjust frame slide thumbnail scale"
             />
-            <span className="text-[11px] font-bold text-slate-300 min-w-[32px] text-right">{zoomPercent} %</span>
+            <span className="text-[11px] font-bold text-slate-300 min-w-[32px] text-right">{zoomPercent}%</span>
           </div>
 
           {/* ScreenToGif Colored Statistics Badges: Green Total, Red Selected, Blue Unselected */}
           <div className="flex items-center gap-2 font-bold text-xs bg-[#080c16] px-2.5 py-1 rounded-lg border border-slate-800">
-            {/* Total Frames in Green (like 3415 in screenshot) */}
+            {/* Total Frames in Green */}
             <span className="text-emerald-400" title="Total Frame Count">
               {frames.length}
             </span>
-            {/* Selected Frames in Red / Rose (like 1 in screenshot) */}
+            {/* Selected Frames in Red / Rose */}
             <span className="text-rose-400" title="Selected Frames for Deletion">
               {selectedCount}
             </span>
-            {/* Unselected Frames in Blue / Cyan (like 0 in screenshot) */}
+            {/* Unselected Frames in Blue / Cyan */}
             <span className="text-sky-400" title="Unselected Frames">
               {unselectedCount}
             </span>
@@ -746,7 +889,11 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
             </button>
 
             <button
-              onClick={() => onSeek(frames[frames.length - 1].startTime)}
+              onClick={() => {
+                if (frames.length > 0) {
+                  onSeek(frames[frames.length - 1].startTime);
+                }
+              }}
               className="p-1 rounded hover:bg-slate-700 text-slate-300 transition-all"
               title="Last Frame (>>|)"
             >
@@ -754,17 +901,31 @@ export const FrameSlideStrip: React.FC<FrameSlideStripProps> = ({
             </button>
           </div>
 
-          <button
-            onClick={() => {
-              if (scrollContainerRef.current) {
-                scrollContainerRef.current.scrollBy({ left: 250, behavior: 'smooth' });
-              }
-            }}
-            className="p-1 rounded bg-[#131b2d] hover:bg-slate-700 text-slate-300 transition-all border border-slate-700/60"
-            title="Scroll Right"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
+          {layoutMode === 'strip' ? (
+            <button
+              onClick={() => {
+                if (scrollContainerRef.current) {
+                  scrollContainerRef.current.scrollBy({ left: 250, behavior: 'smooth' });
+                }
+              }}
+              className="p-1 rounded bg-[#131b2d] hover:bg-slate-700 text-slate-300 transition-all border border-slate-700/60"
+              title="Scroll Right"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                if (gridContainerRef.current) {
+                  gridContainerRef.current.scrollTo({ top: gridContainerRef.current.scrollHeight, behavior: 'smooth' });
+                }
+              }}
+              className="px-2 py-1 rounded bg-[#131b2d] hover:bg-slate-700 text-slate-300 text-[11px] transition-all border border-slate-700/60"
+              title="Scroll to Bottom"
+            >
+              Bottom
+            </button>
+          )}
         </div>
       </div>
     </div>
