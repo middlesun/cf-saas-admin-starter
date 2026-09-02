@@ -645,356 +645,499 @@ export async function renderAndExportVideo(
     typeof (window as any).VideoEncoder !== 'undefined' &&
     typeof (window as any).VideoFrame !== 'undefined';
 
-  if (!hasWebCodecs) {
-    throw new Error(
-      'Studio Quality Export requires the WebCodecs API (supported in Google Chrome, Microsoft Edge, Brave, Opera, Arc, and Safari 16.4+). Please open this app in a modern browser for studio exports.'
-    );
-  }
-
   const frameDurationMicros = Math.round(1_000_000 / fps);
   const totalFrames = Math.max(1, Math.ceil(totalDuration * fps));
 
-  // Audio Encoder Setup
-  let audioEncoder: any = null;
-  let audioChunkOffset = 0;
-  const AUDIO_SAMPLE_RATE = 48000;
-  const AUDIO_CHUNK_FRAMES = 1024;
-
-  if (
-    audioBuffer &&
-    typeof (window as any).AudioEncoder !== 'undefined' &&
-    typeof (window as any).AudioData !== 'undefined'
-  ) {
-    const audioCodecString = format === 'mp4' ? 'mp4a.40.2' : 'opus';
-    try {
-      const isAudioSupported = await (window as any).AudioEncoder.isConfigSupported({
-        codec: audioCodecString,
-        sampleRate: AUDIO_SAMPLE_RATE,
-        numberOfChannels: 2,
-        bitrate: 192000,
-      });
-
-      if (isAudioSupported && isAudioSupported.supported) {
-        audioEncoder = new (window as any).AudioEncoder({
-          output: (chunk: any, meta: any) => {
-            if (muxer) {
-              muxer.addAudioChunk(chunk, meta);
-            }
-          },
-          error: (err: any) => {
-            console.error('[VideoExporter] AudioEncoder error:', err);
-          },
-        });
-
-        audioEncoder.configure({
-          codec: audioCodecString,
-          sampleRate: AUDIO_SAMPLE_RATE,
-          numberOfChannels: 2,
-          bitrate: 192000,
-        });
-      }
-    } catch (audioConfErr) {
-      console.warn('[VideoExporter] Audio encoder configuration notice:', audioConfErr);
-    }
-  }
-
-  let muxerTarget: Mp4ArrayBufferTarget | WebmArrayBufferTarget;
-  let muxer: any;
-
-  if (format === 'mp4') {
-    muxerTarget = new Mp4ArrayBufferTarget();
-    const muxerConfig: any = {
-      target: muxerTarget,
-      video: {
-        codec: 'avc',
-        width,
-        height,
-        frameRate: fps,
-      },
-      fastStart: 'in-memory',
-      firstTimestampBehavior: 'strict',
-    };
-    if (audioEncoder) {
-      muxerConfig.audio = {
-        codec: 'aac',
-        numberOfChannels: 2,
-        sampleRate: AUDIO_SAMPLE_RATE,
-      };
-    }
-    muxer = new Mp4Muxer(muxerConfig);
-  } else {
-    muxerTarget = new WebmArrayBufferTarget();
-    const muxerConfig: any = {
-      target: muxerTarget,
-      video: {
-        codec: 'V_VP9',
-        width,
-        height,
-        frameRate: fps,
-      },
-    };
-    if (audioEncoder) {
-      muxerConfig.audio = {
-        codec: 'A_OPUS',
-        numberOfChannels: 2,
-        sampleRate: AUDIO_SAMPLE_RATE,
-      };
-    }
-    muxer = new WebmMuxer(muxerConfig);
-  }
-
-  // Probe hardware encoder capabilities in descending order of profile/level support
-  let chosenCodec = 'avc1.640028';
-  if (format === 'mp4') {
-    const candidates = [
-      'avc1.640034', // High Profile, Level 5.2 (4K UHD @ 60fps)
-      'avc1.640033', // High Profile, Level 5.1 (4K UHD @ 30fps)
-      'avc1.640032', // High Profile, Level 5.0 (1440p @ 60fps)
-      'avc1.64002a', // High Profile, Level 4.2 (1080p @ 60fps)
-      'avc1.640028', // High Profile, Level 4.0 (1080p @ 30fps)
-      'avc1.4d002a', // Main Profile, Level 4.2
-      'avc1.4d0028', // Main Profile, Level 4.0
-      'avc1.42001f', // Baseline Profile, Level 3.1
-    ];
-    for (const c of candidates) {
-      try {
-        const supp = await (window as any).VideoEncoder.isConfigSupported({
-          codec: c,
-          width,
-          height,
-          bitrate: videoBitsPerSecond,
-          framerate: fps,
-        });
-        if (supp && supp.supported) {
-          chosenCodec = c;
-          break;
-        }
-      } catch {}
-    }
-  } else {
-    const candidates = [
-      'vp09.00.41.08', // VP9 Profile 0, Level 4.1
-      'vp09.00.31.08', // VP9 Profile 0, Level 3.1
-      'vp09.00.10.08', // VP9 Profile 0, Level 1.0
-      'vp8',
-    ];
-    chosenCodec = 'vp09.00.10.08';
-    for (const c of candidates) {
-      try {
-        const supp = await (window as any).VideoEncoder.isConfigSupported({
-          codec: c,
-          width,
-          height,
-          bitrate: videoBitsPerSecond,
-          framerate: fps,
-        });
-        if (supp && supp.supported) {
-          chosenCodec = c;
-          break;
-        }
-      } catch {}
-    }
-  }
-
-  let encoderError: Error | null = null;
-  const videoEncoder = new (window as any).VideoEncoder({
-    output: (chunk: any, meta: any) => {
-      muxer.addVideoChunk(chunk, meta);
-    },
-    error: (err: any) => {
-      console.error('VideoEncoder error:', err);
-      encoderError = err instanceof Error ? err : new Error(String(err));
-    },
-  });
-
-  const encoderConfig: any = {
-    codec: chosenCodec,
-    width,
-    height,
-    bitrate: videoBitsPerSecond,
-    framerate: fps,
-    bitrateMode: 'variable',
-    latencyMode: 'quality',
-    hardwareAcceleration: 'prefer-hardware',
-  };
-
-  if (format === 'mp4') {
-    encoderConfig.avc = { format: 'avc' };
-  }
-
-  try {
-    videoEncoder.configure(encoderConfig);
-  } catch (configErr) {
-    try {
-      videoEncoder.configure({
-        ...encoderConfig,
-        hardwareAcceleration: 'no-preference',
-      });
-    } catch {
-      throw configErr;
-    }
-  }
-
+  let webCodecsSuccess = false;
+  let finalBlob: Blob | null = null;
   let encodedFrameCount = 0;
-  const exportStartTime = performance.now();
 
-  // Deterministic frame-by-frame loop: exact timestamp calculation, zero dropped frames!
-  for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
-    if (encoderError) {
-      throw encoderError;
-    }
+  if (hasWebCodecs) {
+    try {
+      // Audio Encoder Setup
+      let audioEncoder: any = null;
+      let audioChunkOffset = 0;
+      const AUDIO_SAMPLE_RATE = 48000;
+      const AUDIO_CHUNK_FRAMES = 1024;
 
-    const currentTimelineTime = frameIndex / fps;
-    const timestampMicros = Math.round(frameIndex * frameDurationMicros);
+      if (
+        audioBuffer &&
+        typeof (window as any).AudioEncoder !== 'undefined' &&
+        typeof (window as any).AudioData !== 'undefined'
+      ) {
+        const audioCodecString = format === 'mp4' ? 'mp4a.40.2' : 'opus';
+        try {
+          const isAudioSupported = await (window as any).AudioEncoder.isConfigSupported({
+            codec: audioCodecString,
+            sampleRate: AUDIO_SAMPLE_RATE,
+            numberOfChannels: 2,
+            bitrate: 192000,
+          });
 
-    // Report progress with rich telemetry
-    if (frameIndex % 3 === 0 || frameIndex === totalFrames - 1) {
-      const progressPercent = Math.min(94, Math.floor(7 + (frameIndex / totalFrames) * 87));
-      const elapsedSecs = (performance.now() - exportStartTime) / 1000;
-      const framesDone = frameIndex + 1;
-      const fpsRendered = elapsedSecs > 0 ? framesDone / elapsedSecs : fps;
-      const remainingFrames = totalFrames - framesDone;
-      const estimatedRemainingSecs = fpsRendered > 0 ? Math.ceil(remainingFrames / fpsRendered) : 0;
-      const bitrateMbps = Number((videoBitsPerSecond / 1_000_000).toFixed(1));
+          if (isAudioSupported && isAudioSupported.supported) {
+            let audioInitFailed = false;
+            const tempAudioEncoder = new (window as any).AudioEncoder({
+              output: (chunk: any, meta: any) => {
+                if (muxer) {
+                  try {
+                    muxer.addAudioChunk(chunk, meta);
+                  } catch (mErr) {
+                    console.warn('[VideoExporter] Audio chunk mux notice:', mErr);
+                  }
+                }
+              },
+              error: (err: any) => {
+                console.warn('[VideoExporter] AudioEncoder notice:', err);
+                audioInitFailed = true;
+                audioEncoder = null;
+              },
+            });
 
-      onProgress({
-        percentage: progressPercent,
-        status: `Rendering & encoding frame ${framesDone} of ${totalFrames} (${currentTimelineTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)...`,
-        currentFrame: framesDone,
-        totalFrames,
-        fps,
-        bitrateMbps,
-        elapsedSeconds: Math.round(elapsedSecs),
-        estimatedRemainingSecs,
-        hasAudio: Boolean(audioEncoder),
-      });
-    }
+            tempAudioEncoder.configure({
+              codec: audioCodecString,
+              sampleRate: AUDIO_SAMPLE_RATE,
+              numberOfChannels: 2,
+              bitrate: 192000,
+            });
 
-    // Hardware encoder backpressure: wait if the encoder queue gets backlogged
-    while (videoEncoder.encodeQueueSize > 5) {
-      await new Promise((r) => setTimeout(r, 6));
-    }
-
-    // Clear canvas
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, width, height);
-
-    // Check for Transition Card
-    const activeTransition = project.transitions?.find(
-      (tr) => currentTimelineTime >= tr.timestamp && currentTimelineTime < tr.timestamp + tr.duration
-    );
-
-    if (activeTransition) {
-      renderTransitionCardFrame(ctx, width, height, activeTransition, currentTimelineTime - activeTransition.timestamp);
-    } else {
-      // Video frame rendering
-      const sourceTime = calculateSourceTime(project, currentTimelineTime);
-      if (exportVideo.readyState >= 1) {
-        await seekVideoElement(exportVideo, sourceTime);
+            await new Promise((r) => setTimeout(r, 25));
+            if (!audioInitFailed && tempAudioEncoder.state === 'configured') {
+              audioEncoder = tempAudioEncoder;
+            } else {
+              try { tempAudioEncoder.close(); } catch {}
+              audioEncoder = null;
+            }
+          }
+        } catch (audioConfErr) {
+          console.warn('[VideoExporter] Audio encoder configuration notice:', audioConfErr);
+          audioEncoder = null;
+        }
       }
-      drawCompositedFrame(ctx, exportVideo, project, currentTimelineTime, width, height, sourceAspect);
+
+      let muxerTarget: Mp4ArrayBufferTarget | WebmArrayBufferTarget;
+      let muxer: any;
+
+      if (format === 'mp4') {
+        muxerTarget = new Mp4ArrayBufferTarget();
+        const muxerConfig: any = {
+          target: muxerTarget,
+          video: {
+            codec: 'avc',
+            width,
+            height,
+            frameRate: fps,
+          },
+          fastStart: 'in-memory',
+          firstTimestampBehavior: 'strict',
+        };
+        if (audioEncoder) {
+          muxerConfig.audio = {
+            codec: 'aac',
+            numberOfChannels: 2,
+            sampleRate: AUDIO_SAMPLE_RATE,
+          };
+        }
+        muxer = new Mp4Muxer(muxerConfig);
+      } else {
+        muxerTarget = new WebmArrayBufferTarget();
+        const muxerConfig: any = {
+          target: muxerTarget,
+          video: {
+            codec: 'V_VP9',
+            width,
+            height,
+            frameRate: fps,
+          },
+        };
+        if (audioEncoder) {
+          muxerConfig.audio = {
+            codec: 'A_OPUS',
+            numberOfChannels: 2,
+            sampleRate: AUDIO_SAMPLE_RATE,
+          };
+        }
+        muxer = new WebmMuxer(muxerConfig);
+      }
+
+      // Codec candidates tailored specifically by resolution to prevent MFT/GPU Level rejection
+      const isHighRes = width > 1920 || height > 1080;
+      const mp4Candidates = isHighRes
+        ? [
+            'avc1.640033', // High Profile Level 5.1 (4K)
+            'avc1.640032', // High Profile Level 5.0 (1440p)
+            'avc1.4d0033', // Main Profile Level 5.1
+            'avc1.64002a', // High Profile Level 4.2
+            'avc1.4d002a', // Main Profile Level 4.2
+            'avc1.42002a', // Baseline Profile Level 4.2
+            'avc1.42001f', // Baseline Profile Level 3.1
+          ]
+        : [
+            'avc1.4d002a', // Main Profile Level 4.2 (Universal standard for 1080p60)
+            'avc1.64002a', // High Profile Level 4.2 (1080p60)
+            'avc1.4d0028', // Main Profile Level 4.0
+            'avc1.640028', // High Profile Level 4.0
+            'avc1.420028', // Baseline Profile Level 4.0
+            'avc1.42001f', // Baseline Profile Level 3.1 (Universal baseline)
+            'avc1.42001e', // Baseline Profile Level 3.0
+          ];
+
+      const webmCandidates = [
+        'vp09.00.10.08',
+        'vp09.00.41.08',
+        'vp8',
+      ];
+
+      const codecCandidates = format === 'mp4' ? mp4Candidates : webmCandidates;
+      const accelModes: ('no-preference' | 'prefer-software')[] = ['no-preference', 'prefer-software'];
+
+      let videoEncoder: any = null;
+      let encoderErrorRef = { current: null as Error | null };
+      let activeCodec = '';
+
+      // Auto-probing verification loop: Finds an encoder config that actually instantiates on the user's GPU/browser
+      for (const accel of accelModes) {
+        if (videoEncoder) break;
+        for (const candidateCodec of codecCandidates) {
+          try {
+            const probeConfig: any = {
+              codec: candidateCodec,
+              width,
+              height,
+              bitrate: videoBitsPerSecond,
+              framerate: fps,
+              bitrateMode: 'variable',
+              hardwareAcceleration: accel,
+            };
+
+            if (format === 'mp4') {
+              probeConfig.avc = { format: 'avc' };
+            }
+
+            let isSupported = false;
+            try {
+              const res = await (window as any).VideoEncoder.isConfigSupported(probeConfig);
+              isSupported = Boolean(res && res.supported);
+            } catch {
+              isSupported = false;
+            }
+
+            if (!isSupported) continue;
+
+            const currentErr = { current: null as Error | null };
+            const testEnc = new (window as any).VideoEncoder({
+              output: (chunk: any, meta: any) => {
+                muxer.addVideoChunk(chunk, meta);
+              },
+              error: (err: any) => {
+                console.warn(`[VideoEncoder] Candidate ${candidateCodec} (${accel}) reported notice:`, err);
+                currentErr.current = err instanceof Error ? err : new Error(String(err));
+              },
+            });
+
+            testEnc.configure(probeConfig);
+
+            // Await 35ms tick to verify hardware MFT / driver does not asynchronously trigger creation error
+            await new Promise((r) => setTimeout(r, 35));
+
+            if (!currentErr.current && testEnc.state === 'configured') {
+              videoEncoder = testEnc;
+              encoderErrorRef = currentErr;
+              activeCodec = candidateCodec;
+              break;
+            } else {
+              try {
+                testEnc.close();
+              } catch {}
+            }
+          } catch (candErr) {
+            console.warn(`[VideoEncoder] Error probing ${candidateCodec}:`, candErr);
+          }
+        }
+      }
+
+      if (videoEncoder) {
+        const exportStartTime = performance.now();
+
+        // Deterministic frame-by-frame loop: exact timestamp calculation, zero dropped frames!
+        for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
+          if (encoderErrorRef.current) {
+            throw encoderErrorRef.current;
+          }
+
+          const currentTimelineTime = frameIndex / fps;
+          const timestampMicros = Math.round(frameIndex * frameDurationMicros);
+
+          // Report progress with rich telemetry
+          if (frameIndex % 3 === 0 || frameIndex === totalFrames - 1) {
+            const progressPercent = Math.min(94, Math.floor(7 + (frameIndex / totalFrames) * 87));
+            const elapsedSecs = (performance.now() - exportStartTime) / 1000;
+            const framesDone = frameIndex + 1;
+            const fpsRendered = elapsedSecs > 0 ? framesDone / elapsedSecs : fps;
+            const remainingFrames = totalFrames - framesDone;
+            const estimatedRemainingSecs = fpsRendered > 0 ? Math.ceil(remainingFrames / fpsRendered) : 0;
+            const bitrateMbps = Number((videoBitsPerSecond / 1_000_000).toFixed(1));
+
+            onProgress({
+              percentage: progressPercent,
+              status: `Rendering & encoding frame ${framesDone} of ${totalFrames} (${currentTimelineTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)...`,
+              currentFrame: framesDone,
+              totalFrames,
+              fps,
+              bitrateMbps,
+              elapsedSeconds: Math.round(elapsedSecs),
+              estimatedRemainingSecs,
+              hasAudio: Boolean(audioEncoder),
+            });
+          }
+
+          // Hardware encoder backpressure: wait if the encoder queue gets backlogged
+          while (videoEncoder.encodeQueueSize > 5) {
+            await new Promise((r) => setTimeout(r, 6));
+          }
+
+          // Clear canvas
+          ctx.fillStyle = '#0f172a';
+          ctx.fillRect(0, 0, width, height);
+
+          // Check for Transition Card
+          const activeTransition = project.transitions?.find(
+            (tr) => currentTimelineTime >= tr.timestamp && currentTimelineTime < tr.timestamp + tr.duration
+          );
+
+          if (activeTransition) {
+            renderTransitionCardFrame(ctx, width, height, activeTransition, currentTimelineTime - activeTransition.timestamp);
+          } else {
+            // Video frame rendering
+            const sourceTime = calculateSourceTime(project, currentTimelineTime);
+            if (exportVideo.readyState >= 1) {
+              await seekVideoElement(exportVideo, sourceTime);
+            }
+            drawCompositedFrame(ctx, exportVideo, project, currentTimelineTime, width, height, sourceAspect);
+          }
+
+          // Create VideoFrame and encode
+          const videoFrame = new (window as any).VideoFrame(canvas, {
+            timestamp: timestampMicros,
+            duration: frameDurationMicros,
+          });
+
+          // Send keyframe every 2 seconds or at frame 0
+          const isKeyFrame = frameIndex === 0 || frameIndex % (fps * 2) === 0;
+          videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
+          videoFrame.close();
+          encodedFrameCount++;
+
+          // Synchronously feed audio chunks matching current timeline progress
+          if (audioEncoder && audioBuffer) {
+            const currentSampleTarget = Math.min(
+              audioBuffer.length,
+              Math.round((frameIndex + 1) * (AUDIO_SAMPLE_RATE / fps))
+            );
+
+            const leftChannel = audioBuffer.getChannelData(0);
+            const rightChannel = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : leftChannel;
+
+            while (audioChunkOffset + AUDIO_CHUNK_FRAMES <= currentSampleTarget) {
+              const chunkFrames = AUDIO_CHUNK_FRAMES;
+              const planarData = new Float32Array(chunkFrames * 2);
+              planarData.set(leftChannel.subarray(audioChunkOffset, audioChunkOffset + chunkFrames), 0);
+              planarData.set(rightChannel.subarray(audioChunkOffset, audioChunkOffset + chunkFrames), chunkFrames);
+
+              const audioMicros = Math.round((audioChunkOffset / AUDIO_SAMPLE_RATE) * 1_000_000);
+              const audioData = new (window as any).AudioData({
+                format: 'f32-planar',
+                sampleRate: AUDIO_SAMPLE_RATE,
+                numberOfChannels: 2,
+                numberOfFrames: chunkFrames,
+                timestamp: audioMicros,
+                data: planarData,
+              });
+
+              audioEncoder.encode(audioData);
+              audioData.close();
+              audioChunkOffset += chunkFrames;
+            }
+          }
+
+          // Micro-yield to keep UI fluid
+          if (frameIndex % 8 === 0) {
+            await new Promise((r) => setTimeout(r, 0));
+          }
+        }
+
+        if (encoderErrorRef.current) {
+          throw encoderErrorRef.current;
+        }
+
+        // Flush any remaining trailing audio samples
+        if (audioEncoder && audioBuffer && audioChunkOffset < audioBuffer.length) {
+          const remainingFrames = audioBuffer.length - audioChunkOffset;
+          if (remainingFrames > 0) {
+            const leftChannel = audioBuffer.getChannelData(0);
+            const rightChannel = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : leftChannel;
+
+            const planarData = new Float32Array(remainingFrames * 2);
+            planarData.set(leftChannel.subarray(audioChunkOffset, audioChunkOffset + remainingFrames), 0);
+            planarData.set(rightChannel.subarray(audioChunkOffset, audioChunkOffset + remainingFrames), remainingFrames);
+
+            const audioMicros = Math.round((audioChunkOffset / AUDIO_SAMPLE_RATE) * 1_000_000);
+            const audioData = new (window as any).AudioData({
+              format: 'f32-planar',
+              sampleRate: AUDIO_SAMPLE_RATE,
+              numberOfChannels: 2,
+              numberOfFrames: remainingFrames,
+              timestamp: audioMicros,
+              data: planarData,
+            });
+
+            audioEncoder.encode(audioData);
+            audioData.close();
+            audioChunkOffset += remainingFrames;
+          }
+        }
+
+        if (audioEncoder) {
+          onProgress({ percentage: 94, status: 'Flushing audio encoder stream...' });
+          await audioEncoder.flush();
+          audioEncoder.close();
+        }
+
+        onProgress({ percentage: 96, status: 'Finalizing hardware video stream & packaging MP4...' });
+        await videoEncoder.flush();
+        videoEncoder.close();
+        muxer.finalize();
+
+        finalBlob = new Blob([muxerTarget.buffer], {
+          type: format === 'mp4' ? 'video/mp4' : 'video/webm',
+        });
+        webCodecsSuccess = true;
+      }
+    } catch (wcErr) {
+      console.warn('[VideoExporter] WebCodecs pipeline note, transitioning to universal pipeline:', wcErr);
+      webCodecsSuccess = false;
+    }
+  }
+
+  // -----------------------------------------------------------
+  // UNIVERSAL MEDIARECORDER FALLBACK PIPELINE
+  // Seamlessly takes over if the host GPU/browser rejects WebCodecs
+  // -----------------------------------------------------------
+  if (!webCodecsSuccess || !finalBlob) {
+    onProgress({ percentage: 8, status: 'Processing via universal high-compatibility engine...' });
+
+    const stream = canvas.captureStream(fps);
+    let fallbackAudioCtx: AudioContext | null = null;
+
+    if (audioBuffer) {
+      try {
+        fallbackAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const audioDest = fallbackAudioCtx.createMediaStreamDestination();
+        const bufferSource = fallbackAudioCtx.createBufferSource();
+        bufferSource.buffer = audioBuffer;
+        bufferSource.connect(audioDest);
+        bufferSource.start(0);
+
+        audioDest.stream.getAudioTracks().forEach((track) => {
+          stream.addTrack(track);
+        });
+      } catch (aFallbackErr) {
+        console.warn('[VideoExporter] Universal audio stream notice:', aFallbackErr);
+      }
     }
 
-    // Create VideoFrame and encode
-    const videoFrame = new (window as any).VideoFrame(canvas, {
-      timestamp: timestampMicros,
-      duration: frameDurationMicros,
+    const mimeCandidates = format === 'mp4'
+      ? ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=h264', 'video/webm']
+      : ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+
+    let chosenMime = 'video/webm';
+    for (const m of mimeCandidates) {
+      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(m)) {
+        chosenMime = m;
+        break;
+      }
+    }
+
+    const recordedChunks: Blob[] = [];
+    const mediaRecorder = new MediaRecorder(stream, {
+      mimeType: chosenMime,
+      videoBitsPerSecond,
     });
 
-    // Send keyframe every 2 seconds or at frame 0
-    const isKeyFrame = frameIndex === 0 || frameIndex % (fps * 2) === 0;
-    videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
-    videoFrame.close();
-    encodedFrameCount++;
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) {
+        recordedChunks.push(e.data);
+      }
+    };
 
-    // Synchronously feed audio chunks matching current timeline progress
-    if (audioEncoder && audioBuffer) {
-      const currentSampleTarget = Math.min(
-        audioBuffer.length,
-        Math.round((frameIndex + 1) * (AUDIO_SAMPLE_RATE / fps))
+    const recordPromise = new Promise<Blob>((resolve, reject) => {
+      mediaRecorder.onstop = () => {
+        const outBlob = new Blob(recordedChunks, { type: chosenMime });
+        resolve(outBlob);
+      };
+      mediaRecorder.onerror = (e) => reject(e);
+    });
+
+    mediaRecorder.start(250);
+    const exportStartTime = performance.now();
+
+    for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
+      const currentTimelineTime = frameIndex / fps;
+
+      if (frameIndex % 3 === 0 || frameIndex === totalFrames - 1) {
+        const progressPercent = Math.min(94, Math.floor(8 + (frameIndex / totalFrames) * 86));
+        const elapsedSecs = (performance.now() - exportStartTime) / 1000;
+        const framesDone = frameIndex + 1;
+        const fpsRendered = elapsedSecs > 0 ? framesDone / elapsedSecs : fps;
+        const remainingFrames = totalFrames - framesDone;
+        const estimatedRemainingSecs = fpsRendered > 0 ? Math.ceil(remainingFrames / fpsRendered) : 0;
+        const bitrateMbps = Number((videoBitsPerSecond / 1_000_000).toFixed(1));
+
+        onProgress({
+          percentage: progressPercent,
+          status: `Rendering frame ${framesDone} of ${totalFrames} (${currentTimelineTime.toFixed(1)}s / ${totalDuration.toFixed(1)}s)...`,
+          currentFrame: framesDone,
+          totalFrames,
+          fps,
+          bitrateMbps,
+          elapsedSeconds: Math.round(elapsedSecs),
+          estimatedRemainingSecs,
+          hasAudio: Boolean(audioBuffer),
+        });
+      }
+
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, width, height);
+
+      const activeTransition = project.transitions?.find(
+        (tr) => currentTimelineTime >= tr.timestamp && currentTimelineTime < tr.timestamp + tr.duration
       );
 
-      const leftChannel = audioBuffer.getChannelData(0);
-      const rightChannel = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : leftChannel;
-
-      while (audioChunkOffset + AUDIO_CHUNK_FRAMES <= currentSampleTarget) {
-        const chunkFrames = AUDIO_CHUNK_FRAMES;
-        const planarData = new Float32Array(chunkFrames * 2);
-        planarData.set(leftChannel.subarray(audioChunkOffset, audioChunkOffset + chunkFrames), 0);
-        planarData.set(rightChannel.subarray(audioChunkOffset, audioChunkOffset + chunkFrames), chunkFrames);
-
-        const audioMicros = Math.round((audioChunkOffset / AUDIO_SAMPLE_RATE) * 1_000_000);
-        const audioData = new (window as any).AudioData({
-          format: 'f32-planar',
-          sampleRate: AUDIO_SAMPLE_RATE,
-          numberOfChannels: 2,
-          numberOfFrames: chunkFrames,
-          timestamp: audioMicros,
-          data: planarData,
-        });
-
-        audioEncoder.encode(audioData);
-        audioData.close();
-        audioChunkOffset += chunkFrames;
+      if (activeTransition) {
+        renderTransitionCardFrame(ctx, width, height, activeTransition, currentTimelineTime - activeTransition.timestamp);
+      } else {
+        const sourceTime = calculateSourceTime(project, currentTimelineTime);
+        if (exportVideo.readyState >= 1) {
+          await seekVideoElement(exportVideo, sourceTime);
+        }
+        drawCompositedFrame(ctx, exportVideo, project, currentTimelineTime, width, height, sourceAspect);
       }
+
+      encodedFrameCount++;
+
+      // Frame interval pacing
+      await new Promise((r) => setTimeout(r, Math.max(1, Math.round(1000 / fps))));
     }
 
-    // Micro-yield to keep UI fluid
-    if (frameIndex % 8 === 0) {
-      await new Promise((r) => setTimeout(r, 0));
+    onProgress({ percentage: 96, status: 'Finalizing recorded stream...' });
+    mediaRecorder.stop();
+    finalBlob = await recordPromise;
+
+    if (fallbackAudioCtx) {
+      try {
+        await fallbackAudioCtx.close();
+      } catch {}
     }
   }
-
-  if (encoderError) {
-    throw encoderError;
-  }
-
-  // Flush any remaining trailing audio samples
-  if (audioEncoder && audioBuffer && audioChunkOffset < audioBuffer.length) {
-    const remainingFrames = audioBuffer.length - audioChunkOffset;
-    if (remainingFrames > 0) {
-      const leftChannel = audioBuffer.getChannelData(0);
-      const rightChannel = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : leftChannel;
-
-      const planarData = new Float32Array(remainingFrames * 2);
-      planarData.set(leftChannel.subarray(audioChunkOffset, audioChunkOffset + remainingFrames), 0);
-      planarData.set(rightChannel.subarray(audioChunkOffset, audioChunkOffset + remainingFrames), remainingFrames);
-
-      const audioMicros = Math.round((audioChunkOffset / AUDIO_SAMPLE_RATE) * 1_000_000);
-      const audioData = new (window as any).AudioData({
-        format: 'f32-planar',
-        sampleRate: AUDIO_SAMPLE_RATE,
-        numberOfChannels: 2,
-        numberOfFrames: remainingFrames,
-        timestamp: audioMicros,
-        data: planarData,
-      });
-
-      audioEncoder.encode(audioData);
-      audioData.close();
-      audioChunkOffset += remainingFrames;
-    }
-  }
-
-  if (audioEncoder) {
-    onProgress({ percentage: 94, status: 'Flushing audio encoder stream...' });
-    await audioEncoder.flush();
-    audioEncoder.close();
-  }
-
-  onProgress({ percentage: 96, status: 'Finalizing hardware video stream & packaging MP4...' });
-  await videoEncoder.flush();
-  videoEncoder.close();
-  muxer.finalize();
-
-  try {
-    exportVideo.pause();
-    exportVideo.src = '';
-  } catch {}
-
-  const finalBlob = new Blob([muxerTarget.buffer], {
-    type: format === 'mp4' ? 'video/mp4' : 'video/webm',
-  });
 
   // Validation Step
   onProgress({ percentage: 98, status: 'Validating exported video integrity...' });
